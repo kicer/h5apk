@@ -45,6 +45,7 @@
 | `fixed_url` | **必填** | 启动地址，必须是上面两个地址之一，且 host/port 完全一致 |
 | `fallback_url` | _(空)_ | 备用地址，启动地址首次加载失败时切换一次 |
 | `block_external_subresources` | `true` | 拦截非白名单子资源；H5 依赖第三方 CDN 时设为 `false` |
+| `open_external_links` | `true` | 外部 http(s) 链接点击后交系统浏览器打开；`false` = 直接拦截 |
 | `deep_link_pages` | `home:/,tasks:/tasks` | 深链枚举页，`name:path` 逗号分隔 |
 
 值留空则回退默认值；但 `fixed_url` 必填，且配置错误（颜色 / 版本号 / 地址越界 / 包名非法 / 未配置任何 host）会在编译前直接报错。
@@ -65,7 +66,7 @@ fallback_url=http://192.168.1.100:8080   # 域名连不上时自动走 IP:8080
 白名单同时放行这两个 origin；`network_security_config.xml` 只对 `http_host` 开放明文，其余一律禁明文（HTTPS 域名无需声明，始终允许）。
 
 - `agent://` 深链只接受枚举页面：`agent://open?page=home`、`agent://open?page=tasks`；**禁止**传入完整 URL。
-- WebView 的跳转 / 重定向 / 下载 / 上传 / 子资源都会过白名单，非白名单一律拦截，不会交给外部浏览器。
+- WebView 跳转 / 重定向 / 下载 / 上传 / 子资源都会过白名单：白名单内地址在 App 内加载；外部 http(s) 链接按 `open_external_links` 交系统浏览器；其他协议（`tel`/`mailto`/`intent` 等）一律拦截。
 
 ## release 签名（一次性配置）
 

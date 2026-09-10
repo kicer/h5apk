@@ -31,6 +31,7 @@ def cfgHttpsPort = brand('https_port', '443')
 def cfgFixedUrl = brand('fixed_url', '')
 def cfgFallbackUrl = brand('fallback_url', '')
 def cfgBlockExternalSubresources = brand('block_external_subresources', 'true').toBoolean()
+def cfgOpenExternalLinks = brand('open_external_links', 'true').toBoolean()
 def cfgDeepLinkPages = brand('deep_link_pages', 'home:/,tasks:/tasks')
 
 // 包名 = application_id[.customer]（customer 为空则只用 application_id）
@@ -143,6 +144,7 @@ android {
         buildConfigField 'String', 'AGENT_FIXED_URL', q(cfgFixedUrl)
         buildConfigField 'String', 'AGENT_FALLBACK_URL', q(cfgFallbackUrl)
         buildConfigField 'boolean', 'AGENT_BLOCK_EXTERNAL_SUBRESOURCES', "${cfgBlockExternalSubresources}"
+        buildConfigField 'boolean', 'AGENT_OPEN_EXTERNAL_LINKS', "${cfgOpenExternalLinks}"
         buildConfigField 'String', 'AGENT_DEEP_LINK_PAGES', q(cfgDeepLinkPages)
     }
 

@@ -249,6 +249,34 @@ public class MainActivity extends AppCompatActivity {
         webView.loadUrl(url);
     }
 
+    /**
+     * 顶层导航处理：返回 true 表示不在 WebView 内加载（由本方法接管）。
+     * 白名单内地址留在 WebView；外部 http(s) 按开关交给系统浏览器；其余协议拦截。
+     */
+    private boolean handleNavigation(Uri uri) {
+        if (UrlPolicy.isAllowed(uri.toString())) {
+            return false;
+        }
+        if (BuildConfig.AGENT_OPEN_EXTERNAL_LINKS) {
+            String scheme = uri.getScheme();
+            if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+                openInBrowser(uri);
+            }
+        }
+        return true;
+    }
+
+    /** 外部链接交给系统浏览器；只接受 http(s)，不把任意协议抛给外部应用。 */
+    private void openInBrowser(Uri uri) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+            intent.addCategory(Intent.CATEGORY_BROWSABLE);
+            startActivity(intent);
+        } catch (Exception e) {
+            Toast.makeText(this, "未找到可打开该链接的应用", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     /** 启动地址失败时切换到备用地址（只尝试一次）。 */
     private boolean tryFallback() {
         String fallback = BuildConfig.AGENT_FALLBACK_URL;
@@ -353,16 +381,19 @@ public class MainActivity extends AppCompatActivity {
             showContent();
         }
 
-        // ===== 导航/重定向白名单：非白名单地址直接拦截 =====
+        // ===== 导航/重定向白名单 =====
+        // 白名单内地址：WebView 自己加载；
+        // 外部 http(s) 链接：按 open_external_links 交给系统浏览器或直接拦截；
+        // 其他协议（tel/mailto/intent 等）：一律拦截，不拉起外部应用。
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-            return !UrlPolicy.isAllowed(request.getUrl().toString());
+            return handleNavigation(request.getUrl());
         }
 
         @SuppressWarnings("deprecation")
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, String url) {
-            return !UrlPolicy.isAllowed(url);
+            return handleNavigation(Uri.parse(url));
         }
 
         // ===== 子资源兜底：非白名单 http(s) 请求返回 403，防止资源跑出去 =====
