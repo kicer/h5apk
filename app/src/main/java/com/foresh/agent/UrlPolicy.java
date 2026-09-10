@@ -42,15 +42,6 @@ public final class UrlPolicy {
         return false;
     }
 
-    /** 是否为 http(s) 请求（用于子资源兜底判断）。 */
-    public static boolean isHttpOrHttps(String raw) {
-        if (raw == null) {
-            return false;
-        }
-        String scheme = Uri.parse(raw).getScheme();
-        return "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
-    }
-
     private static int effectivePort(int port, int defaultPort) {
         return port == -1 ? defaultPort : port;
     }

@@ -42,12 +42,12 @@
 | `http_port` | `8080` | HTTP 直连端口 |
 | `https_host` | _(空)_ | HTTPS 固定域名 |
 | `https_port` | `443` | HTTPS 端口 |
-| `fixed_url` | _(空)_ | 启动地址，必须是上面两个地址之一，且 host/port 完全一致 |
+| `fixed_url` | **必填** | 启动地址，必须是上面两个地址之一，且 host/port 完全一致 |
 | `fallback_url` | _(空)_ | 备用地址，启动地址首次加载失败时切换一次 |
 | `block_external_subresources` | `true` | 拦截非白名单子资源；H5 依赖第三方 CDN 时设为 `false` |
 | `deep_link_pages` | `home:/,tasks:/tasks` | 深链枚举页，`name:path` 逗号分隔 |
 
-值留空则回退默认值；格式错误（颜色 / 版本号 / 地址越界 / 包名非法）会在编译前直接报错。
+值留空则回退默认值；但 `fixed_url` 必填，且配置错误（颜色 / 版本号 / 地址越界 / 包名非法 / 未配置任何 host）会在编译前直接报错。
 
 ### 同时支持 HTTP 固定 IP 与 HTTPS 域名
 
