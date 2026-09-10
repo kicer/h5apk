@@ -1,0 +1,252 @@
+plugins {
+    alias(libs.plugins.android.application)
+}
+
+// ===== 换皮 / 服务端地址配置：branding/branding.properties（缺省用下面默认值）=====
+// 所有地址均为【编译期】写死，装成 APK 后不可修改
+def brandingDir = rootProject.file('branding')
+def brandingProps = new Properties()
+def brandingPropsFile = new File(brandingDir, 'branding.properties')
+if (brandingPropsFile.exists()) {
+    brandingPropsFile.withInputStream { brandingProps.load(it) }
+}
+def brand = { String key, String fallback ->
+    def v = brandingProps.getProperty(key)
+    v = v == null ? null : v.trim()
+    return (v == null || v.isEmpty()) ? fallback : v
+}
+
+def cfgAppName = brand('app_name', 'Agent')
+def cfgStatusColor = brand('status_bar_color', '#3964FE')
+def cfgBaseAppId = brand('application_id', 'com.foresh.agent')
+def cfgCustomer = brand('customer', '')
+def cfgVersionCode = brand('version_code', '1')
+def cfgVersionName = brand('version_name', '1.0')
+
+// 服务端地址（编译期写死）
+def cfgHttpHost = brand('http_host', '')
+def cfgHttpPort = brand('http_port', '8080')
+def cfgHttpsHost = brand('https_host', '')
+def cfgHttpsPort = brand('https_port', '443')
+def cfgFixedUrl = brand('fixed_url', '')
+def cfgFallbackUrl = brand('fallback_url', '')
+def cfgBlockExternalSubresources = brand('block_external_subresources', 'true').toBoolean()
+def cfgDeepLinkPages = brand('deep_link_pages', 'home:/,tasks:/tasks')
+
+// 包名 = application_id[.customer]（customer 为空则只用 application_id）
+def cfgAppId = cfgCustomer ? "${cfgBaseAppId}.${cfgCustomer}" : cfgBaseAppId
+
+// ===== 配置校验：配置错误直接编译失败，避免出包后才发现 =====
+if (!(cfgStatusColor ==~ /#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?/)) {
+    throw new GradleException("branding.properties 中 status_bar_color 格式错误：'${cfgStatusColor}'，应为 #RRGGBB")
+}
+if (!(cfgVersionCode ==~ /\d+/)) {
+    throw new GradleException("branding.properties 中 version_code 必须是整数：'${cfgVersionCode}'")
+}
+if (cfgCustomer && !(cfgCustomer ==~ /[a-z][a-z0-9_]*/)) {
+    throw new GradleException("branding.properties 中 customer 只能由小写字母、数字、下划线组成且以字母开头：'${cfgCustomer}'")
+}
+if (!(cfgAppId ==~ /[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+/)) {
+    throw new GradleException("包名不合法：'${cfgAppId}'")
+}
+if (!(cfgHttpPort ==~ /\d+/) || !(cfgHttpsPort ==~ /\d+/)) {
+    throw new GradleException("http_port / https_port 必须是整数")
+}
+if (!cfgHttpHost && !cfgHttpsHost) {
+    throw new GradleException("branding.properties 必须至少配置 http_host（IP 直连）或 https_host（域名）之一")
+}
+
+def parseOrigin = { String url ->
+    def u
+    try {
+        u = new URI(url)
+    } catch (Exception e) {
+        throw new GradleException("地址格式错误：'${url}'（${e.message}）")
+    }
+    def scheme = u.scheme?.toLowerCase()
+    if (scheme != 'http' && scheme != 'https') {
+        throw new GradleException("只支持 http/https 地址：'${url}'")
+    }
+    if (!u.host) {
+        throw new GradleException("地址缺少主机名：'${url}'")
+    }
+    int port = u.port
+    if (port == -1) {
+        port = (scheme == 'https' ? 443 : 80)
+    }
+    return [scheme, u.host.toLowerCase(), port]
+}
+
+def allowedOrigins = []
+if (cfgHttpHost) {
+    allowedOrigins << ['http', cfgHttpHost.toLowerCase(), cfgHttpPort.toInteger()]
+}
+if (cfgHttpsHost) {
+    allowedOrigins << ['https', cfgHttpsHost.toLowerCase(), cfgHttpsPort.toInteger()]
+}
+
+if (!cfgFixedUrl) {
+    throw new GradleException("branding.properties 必须配置 fixed_url（启动地址）")
+}
+if (!allowedOrigins.contains(parseOrigin(cfgFixedUrl))) {
+    throw new GradleException("fixed_url='${cfgFixedUrl}' 不在允许范围内；应与 http_host:http_port 或 https_host:https_port 完全一致。当前允许：${allowedOrigins}")
+}
+if (cfgFallbackUrl && !allowedOrigins.contains(parseOrigin(cfgFallbackUrl))) {
+    throw new GradleException("fallback_url='${cfgFallbackUrl}' 不在允许范围内。当前允许：${allowedOrigins}")
+}
+cfgDeepLinkPages.split(',').each { item ->
+    if (item.trim() && !item.contains(':')) {
+        throw new GradleException("deep_link_pages 格式应为 name:path 逗号分隔（例：home:/,tasks:/tasks），错误项：'${item}'")
+    }
+}
+
+// 生成 BuildConfig 字符串字面量
+def q = { String s -> '"' + (s == null ? '' : s).replace('\\', '\\\\').replace('"', '\\"') + '"' }
+
+// ===== release 签名：根目录 keystore.properties，不存在则 release 不签名 =====
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+def hasKeystoreProperties = keystorePropsFile.exists() &&
+        keystoreProps.getProperty('storeFile') && keystoreProps.getProperty('storePassword') &&
+        keystoreProps.getProperty('keyAlias') && keystoreProps.getProperty('keyPassword')
+if (hasKeystoreProperties && !rootProject.file(keystoreProps.getProperty('storeFile')).exists()) {
+    throw new GradleException("keystore.properties 指向的密钥库文件不存在：" +
+            keystoreProps.getProperty('storeFile') +
+            "（路径相对项目根目录；如已生成到别处，请移动或改正 storeFile）")
+}
+if (!hasKeystoreProperties) {
+    logger.lifecycle('⚠️ 未配置 keystore.properties，release 产物将不签名（配置方法见 branding/README.md）')
+}
+
+android {
+    namespace 'com.foresh.agent'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId cfgAppId
+        minSdk 21
+        targetSdk 35
+        versionCode cfgVersionCode.toInteger()
+        versionName cfgVersionName
+
+        // 以下资源 / 常量由此处注入，请勿在 res/values 中重复定义
+        resValue 'string', 'app_name', cfgAppName.replace("'", "\\'")
+        resValue 'color', 'status_bar', cfgStatusColor
+
+        buildConfigField 'String', 'AGENT_HTTP_HOST', q(cfgHttpHost)
+        buildConfigField 'int', 'AGENT_HTTP_PORT', "${cfgHttpPort.toInteger()}"
+        buildConfigField 'String', 'AGENT_HTTPS_HOST', q(cfgHttpsHost)
+        buildConfigField 'int', 'AGENT_HTTPS_PORT', "${cfgHttpsPort.toInteger()}"
+        buildConfigField 'String', 'AGENT_FIXED_URL', q(cfgFixedUrl)
+        buildConfigField 'String', 'AGENT_FALLBACK_URL', q(cfgFallbackUrl)
+        buildConfigField 'boolean', 'AGENT_BLOCK_EXTERNAL_SUBRESOURCES', "${cfgBlockExternalSubresources}"
+        buildConfigField 'String', 'AGENT_DEEP_LINK_PAGES', q(cfgDeepLinkPages)
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    sourceSets {
+        main {
+            // 桌面图标 + network_security_config 统一由 branding/res 提供（applyBranding* 任务生成）
+            res.srcDirs += brandingDir.path + '/res'
+        }
+    }
+
+    signingConfigs {
+        if (hasKeystoreProperties) {
+            release {
+                storeFile rootProject.file(keystoreProps.getProperty('storeFile'))
+                storePassword keystoreProps.getProperty('storePassword')
+                keyAlias keystoreProps.getProperty('keyAlias')
+                keyPassword keystoreProps.getProperty('keyPassword')
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // 开混淆 + 资源压缩：体积更小、符号不裸奔，降低杀软规则命中
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (hasKeystoreProperties) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
+
+// ===== 图标生成：优先用 branding/icon/ic_launcher.png，否则用默认图标 =====
+// 每次构建重新生成到 branding/res/mipmap-*，无需手动清理
+def applyBrandingIcon = tasks.register('applyBrandingIcon') {
+    description = 'Generate launcher icons into branding/res from branding/icon'
+    doLast {
+        def custom = new File(brandingDir, 'icon/ic_launcher.png')
+        def defaultIcon = new File(brandingDir, 'icon/default/ic_launcher.webp')
+        def src = custom.exists() ? custom : defaultIcon
+        if (!src.exists()) {
+            throw new GradleException("找不到图标源文件：${src}")
+        }
+        def resDir = new File(brandingDir, 'res')
+        [mdpi: 48, hdpi: 72, xhdpi: 96, xxhdpi: 144, xxxhdpi: 192].each { name, px ->
+            def outDir = new File(resDir, "mipmap-${name}")
+            outDir.mkdirs()
+            // 清掉旧图标，避免 png/webp 同名冲突
+            outDir.listFiles()?.each { if (it.name.startsWith('ic_launcher.')) it.delete() }
+            project.exec {
+                commandLine 'sips', '-s', 'format', 'png', '-z', "${px}", "${px}",
+                        src.absolutePath, '--out', new File(outDir, 'ic_launcher.png').absolutePath
+            }
+        }
+        logger.lifecycle("applyBrandingIcon: 使用 ${src.name} (${src.parent}) 生成图标")
+    }
+}
+
+// ===== 网络安全配置生成：只对固定 HTTP IP 开放明文，其余一律禁明文 =====
+// HTTPS 域名无需在此声明（base-config 只限制明文，HTTPS 始终允许）
+def generateNetworkSecurityConfig = tasks.register('generateNetworkSecurityConfig') {
+    description = 'Generate res/xml/network_security_config.xml from branding.properties'
+    doLast {
+        def outDir = new File(brandingDir, 'res/xml')
+        outDir.mkdirs()
+        def cleartextHosts = []
+        if (cfgHttpHost) {
+            cleartextHosts << cfgHttpHost
+        }
+        def sb = new StringBuilder()
+        sb << '<?xml version="1.0" encoding="utf-8"?>\n'
+        sb << '<!-- 由 branding/build.sh 自动生成，请勿手改；改 branding.properties 后重新构建 -->\n'
+        sb << '<network-security-config>\n'
+        sb << '    <base-config cleartextTrafficPermitted="false" />\n'
+        if (!cleartextHosts.isEmpty()) {
+            sb << '    <domain-config cleartextTrafficPermitted="true">\n'
+            cleartextHosts.unique().each { host ->
+                sb << "        <domain includeSubdomains=\"false\">${host}</domain>\n"
+            }
+            sb << '    </domain-config>\n'
+        }
+        sb << '</network-security-config>\n'
+        new File(outDir, 'network_security_config.xml').text = sb.toString()
+        logger.lifecycle("generateNetworkSecurityConfig: 明文白名单 = ${cleartextHosts}")
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn applyBrandingIcon, generateNetworkSecurityConfig
+}
+
+dependencies {
+    implementation libs.androidx.appcompat
+}
