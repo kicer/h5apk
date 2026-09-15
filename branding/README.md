@@ -22,6 +22,7 @@
 ./branding/build.sh release           # 只打 release 包（配了 keystore.properties 则自动签名）
 ./branding/build.sh all               # debug + release 一起打
 ./branding/build.sh release --clean   # 先 clean 再打包
+./branding/build.sh release --upload  # 打 release 并上传到服务器
 ```
 
 脚本会自动定位 Android Studio 的 JDK、生成图标与 `network_security_config.xml`、编译，并打印 APK 路径与 SHA-256。
@@ -83,6 +84,24 @@ fallback_url=http://192.168.1.100:8080   # 域名连不上时自动走 IP:8080
 3. 以后 `./branding/build.sh release` 直接产出已签名 APK；没配置时仍会正常编译，只是不签名并打印警告。
 
 > ⚠️ `release.keystore` 和 `keystore.properties` 不要提交到任何公开仓库；务必异地备份，签名证书换了就不能覆盖升级老用户的安装。release 固定开启 V1/V2/V3 签名与混淆 + 资源压缩。
+
+## 上传到服务器
+
+打包后自动把 release APK 上传到 Web 目录：
+
+```bash
+./branding/build.sh release --upload
+```
+
+- 远程文件名取自 `branding.properties` 的 `customer`，即 `agent-<customer>.apk`（例：`customer=zclw` → `agent-zclw.apk`）。
+- 默认目标：`root@foresh:/root/workspace/webserver/website/www/html/apk/`。
+- 可用环境变量覆盖，不需要改脚本：
+
+```bash
+UPLOAD_TARGET=root@1.2.3.4 UPLOAD_DIR=/var/www/html/apk ./branding/build.sh release --upload
+```
+
+限制：`--upload` 仅对 `release` / `all` 生效；`customer` 为空、`keystore.properties` 缺失（未签名）或找不到 release APK 时会直接报错中止，不会上传错误产物。
 
 ## 注意事项
 

@@ -3,20 +3,30 @@
 #   ./branding/build.sh            # 只打 debug 包
 #   ./branding/build.sh release    # 只打 release 包
 #   ./branding/build.sh all        # debug + release 一起打
-#   ./branding/build.sh release --clean   # 先 clean 再打 release
+#   ./branding/build.sh release --clean    # 先 clean 再打 release
+#   ./branding/build.sh release --upload   # 打 release 并上传到服务器
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# ===== 上传目标（可用环境变量覆盖）=====
+# 远程文件名固定为 agent-<customer>.apk，customer 取自 branding.properties
+UPLOAD_TARGET="${UPLOAD_TARGET:-root@foresh}"
+UPLOAD_DIR="${UPLOAD_DIR:-/root/workspace/webserver/website/www/html/apk}"
+
 usage() {
-  echo "用法: $0 [debug|release|all] [--clean]" >&2
+  echo "用法: $0 [debug|release|all] [--clean] [--upload]" >&2
+  echo "  --clean   打包前先 clean" >&2
+  echo "  --upload  打包后把 release APK 上传到 ${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-<customer>.apk" >&2
 }
 
 MODE="debug"
 CLEAN=0
+UPLOAD=0
 for arg in "$@"; do
   case "$arg" in
     debug|release|all) MODE="$arg" ;;
     --clean) CLEAN=1 ;;
+    --upload) UPLOAD=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "❌ 未知参数: $arg" >&2; usage; exit 1 ;;
   esac
@@ -76,15 +86,52 @@ if [ "$FOUND" -eq 0 ]; then
 fi
 
 # release 未签名提醒
+UNSIGNED=0
 case "$MODE" in
   release|all)
     if [ ! -f keystore.properties ]; then
       echo ""
       echo "⚠️ 未找到 keystore.properties，release 包未签名（无法上架 / 覆盖升级）。"
       echo "   参考 branding/README.md 配置一次性正式签名，之后不要更换。"
+      UNSIGNED=1
     fi
     ;;
 esac
+
+# ===== 上传到服务器（仅 release / all）=====
+if [ "$UPLOAD" -eq 1 ]; then
+  if [ "$MODE" = "debug" ]; then
+    echo "❌ --upload 只能用于 release 或 all（debug 包不上传）" >&2
+    exit 1
+  fi
+  if [ "$UNSIGNED" -eq 1 ]; then
+    echo "❌ release 包未签名，取消上传" >&2
+    exit 1
+  fi
+  if [ ! -f "$CONFIG" ]; then
+    echo "❌ 上传需要 ${CONFIG} 提供 customer" >&2
+    exit 1
+  fi
+
+  # $zcwx：远程文件名用的客户代号，取自 branding.properties 的 customer
+  CUSTOMER="$(sed -nE 's/^[[:space:]]*customer[[:space:]]*=[[:space:]]*//p' "$CONFIG" | tail -n 1)"
+  if [ -z "$CUSTOMER" ]; then
+    echo "❌ 上传需要配置 customer（远程文件名依赖它，形如 agent-<customer>.apk）" >&2
+    exit 1
+  fi
+
+  APK="app/build/outputs/apk/release/app-release.apk"
+  if [ ! -f "$APK" ]; then
+    echo "❌ 找不到 release APK: $APK" >&2
+    exit 1
+  fi
+
+  REMOTE="${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-${CUSTOMER}.apk"
+  echo ""
+  echo "⬆️  上传: ${APK} -> ${REMOTE}"
+  scp "$APK" "$REMOTE"
+  echo "✅ 上传完成: agent-${CUSTOMER}.apk"
+fi
 
 echo ""
 echo "提示：正式发布前把 APK 传到 VirusTotal 自检，再逐个平台申诉。"
