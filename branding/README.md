@@ -95,10 +95,12 @@ fallback_url=http://192.168.1.100:8080   # 域名连不上时自动走 IP:8080
 
 - 远程文件名取自 `branding.properties` 的 `customer`，即 `agent-<customer>.apk`（例：`customer=zclw` → `agent-zclw.apk`）。
 - 默认目标：`root@foresh:/root/workspace/webserver/website/www/html/apk/`。
+- 上传成功后会打印下载地址：`https://file.foresh.com/apk/agent-<customer>.apk`（例：`https://file.foresh.com/apk/agent-zclw.apk`）。
 - 可用环境变量覆盖，不需要改脚本：
 
 ```bash
 UPLOAD_TARGET=root@1.2.3.4 UPLOAD_DIR=/var/www/html/apk ./branding/build.sh release --upload
+UPLOAD_URL_BASE=https://cdn.example.com/apk ./branding/build.sh release --upload
 ```
 
 限制：`--upload` 仅对 `release` / `all` 生效；`customer` 为空、`keystore.properties` 缺失（未签名）或找不到 release APK 时会直接报错中止，不会上传错误产物。

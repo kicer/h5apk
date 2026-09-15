@@ -12,11 +12,13 @@ cd "$(dirname "$0")/.."
 # 远程文件名固定为 agent-<customer>.apk，customer 取自 branding.properties
 UPLOAD_TARGET="${UPLOAD_TARGET:-root@foresh}"
 UPLOAD_DIR="${UPLOAD_DIR:-/root/workspace/webserver/website/www/html/apk}"
+# 上传成功后打印的下载地址前缀（不带结尾斜杠）
+UPLOAD_URL_BASE="${UPLOAD_URL_BASE:-https://file.foresh.com/apk}"
 
 usage() {
   echo "用法: $0 [debug|release|all] [--clean] [--upload]" >&2
   echo "  --clean   打包前先 clean" >&2
-  echo "  --upload  打包后把 release APK 上传到 ${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-<customer>.apk" >&2
+  echo "  --upload  打包后把 release APK 上传到 ${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-<customer>.apk 并打印下载地址" >&2
 }
 
 MODE="debug"
@@ -131,6 +133,7 @@ if [ "$UPLOAD" -eq 1 ]; then
   echo "⬆️  上传: ${APK} -> ${REMOTE}"
   scp "$APK" "$REMOTE"
   echo "✅ 上传完成: agent-${CUSTOMER}.apk"
+  echo "🔗 下载地址: ${UPLOAD_URL_BASE%/}/agent-${CUSTOMER}.apk"
 fi
 
 echo ""
