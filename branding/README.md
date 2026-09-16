@@ -160,12 +160,27 @@ Settings → Secrets and variables → Actions → **Variables**。需要覆盖�
 >
 > 这样 CI 里只改 `BRAND_CUSTOMER` 就会自动换成对应图标。
 
-### 3. 触发方式
+### 3. 触发方式（两种）
 
-- **手动**：Actions → `Build Android APK` → Run workflow，可临时填 `customer` / `version_code` / `version_name`。
-- **打 tag 自动**：`git tag v2.1.2 && git push origin v2.1.2`。
+**A. 推 tag → 自动编译 → 自动发布到 Release**（推荐）
 
-产物在 workflow 的 Artifacts（`agent-release-apk`），下载即已签名 APK。
+```bash
+# 1. 给新客户加图标（文件名 = 客户代号）
+#    branding/icon/customerA.png
+# 2. 改 branding.properties 的 version_code（必须递增）
+# 3. 打 tag 推上去
+git add -A && git commit -m "bump 2.1.3"
+git tag v2.1.3
+git push origin master --tags
+```
+
+跑完去仓库 **Releases** 页面，直接就有 `agent-<customer>.apk` 可下载，并附带 `SHA256SUMS.txt`。
+
+**打哪些客户由 `branding/icon/` 决定：** 每个 `branding/icon/<customer>.png` 打一个包，再并入 `branding.properties` 里的 `customer`（自动去重）。所以「给 A 客户打包」= 把 `A.png` 放进去 + 推个 tag。
+
+**B. 手动跑 → 只产出 Actions Artifacts**
+
+Actions → `Build Android APK` → Run workflow。可指定 `customer`（只打这一个）、`version_code`、`version_name`；留空则用 Variables / `branding.properties`。手动跑**不会**建 Release，产物在当次运行的 Artifacts 里（保留 30 天）。
 
 ### 4. 优先级
 
@@ -177,6 +192,12 @@ workflow 手动输入(-P)  >  GitHub Variables(BRAND_*)  >  branding.properties 
 
 ```bash
 ./branding/build.sh release -Pcustomer=customerA -Pversion_code=100
+```
+
+想本地看「会打哪些客户」：
+
+```bash
+bash branding/ci-targets.sh
 ```
 
 > 为兼容 CI，图标生成已从 macOS 的 `sips` 换成纯 Java（ImageIO），默认图标从 `.webp` 换成 `.png`（Java 读不了 WebP）；`gradle.properties` 加了 `-Djava.awt.headless=true`。

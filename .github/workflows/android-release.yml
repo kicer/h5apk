@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       customer:
-        description: 'customer 代号（留空 = 用 Variables / branding.properties 的值）'
+        description: '只打这一个客户（留空 = 打 branding/icon/ 下所有客户图标）'
         required: false
         default: ''
       version_code:
@@ -16,7 +16,7 @@ on:
         description: 'version_name（留空 = 用 Variables / branding.properties 的值）'
         required: false
         default: ''
-  # 打 tag（v*）自动出包
+  # 推 v* tag 自动出包，并自动发布到 Release 供直接下载
   push:
     tags:
       - 'v*'
@@ -29,12 +29,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  # 决定本次构建哪些客户包
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.scan.outputs.targets }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Scan build targets
+        id: scan
+        env:
+          INPUT_CUSTOMER: ${{ github.event.inputs.customer }}
+        run: bash branding/ci-targets.sh >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        customer: ${{ fromJSON(needs.prepare.outputs.targets) }}
     # ===== 全部换皮配置项都可以在 GitHub 上配 =====
-    # 在 Settings → Secrets and variables → Actions → Variables 里新建同名 Variable 即可覆盖；
-    # 未配置的项自动回退到 branding.properties，因此这里全留空也能正常出包。
-    # 优先级：workflow 手动输入 -P > 这里的 Variable > branding.properties > 代码默认值
+    # Settings → Secrets and variables → Actions → Variables 里新建同名 Variable 即可覆盖；
+    # 未配置的项自动回退到 branding.properties（空串会被当作「未设置」）
     env:
       BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
       BRAND_STATUS_BAR_COLOR: ${{ vars.BRAND_STATUS_BAR_COLOR }}
@@ -62,9 +81,8 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      # ubuntu-latest 镜像自带 Android SDK；不再用 android-actions/setup-android
-      # （它会把不存在的 tools 包当参数传给 sdkmanager 而失败）
-      # 这里只确保许可证已接受 + 装齐需要的组件，失败也不阻断，交给 Gradle 自动下载
+      # ubuntu-latest 镜像自带 Android SDK；不用 android-actions/setup-android
+      # （它会把已废弃的 tools 包传给 sdkmanager 而失败）
       - name: Prepare Android SDK
         run: |
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
@@ -106,13 +124,17 @@ jobs:
 
       - name: Build release APK
         env:
-          INPUT_CUSTOMER: ${{ github.event.inputs.customer }}
+          TARGET: ${{ matrix.customer }}
           INPUT_VERSION_CODE: ${{ github.event.inputs.version_code }}
           INPUT_VERSION_NAME: ${{ github.event.inputs.version_name }}
         run: |
+          set -euo pipefail
           ARGS=""
-          if [ -n "$INPUT_CUSTOMER" ]; then
-            ARGS="$ARGS -Pcustomer=$INPUT_CUSTOMER"
+          if [ "$TARGET" = "_base" ]; then
+            # 显式清空 customer，强制使用基础包名
+            ARGS="-Pcustomer="
+          else
+            ARGS="-Pcustomer=$TARGET"
           fi
           if [ -n "$INPUT_VERSION_CODE" ]; then
             ARGS="$ARGS -Pversion_code=$INPUT_VERSION_CODE"
@@ -120,13 +142,54 @@ jobs:
           if [ -n "$INPUT_VERSION_NAME" ]; then
             ARGS="$ARGS -Pversion_name=$INPUT_VERSION_NAME"
           fi
+
           # shellcheck disable=SC2086
           ./branding/build.sh release $ARGS
 
+          mkdir -p dist
+          if [ "$TARGET" = "_base" ]; then
+            OUT="agent.apk"
+          else
+            OUT="agent-$TARGET.apk"
+          fi
+          cp app/build/outputs/apk/release/app-release.apk "dist/$OUT"
+          echo "产物: dist/$OUT"
+
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: agent-release-apk
-          path: app/build/outputs/apk/release/*.apk
+          name: apk-${{ matrix.customer }}
+          path: dist/*.apk
           if-no-files-found: error
           retention-days: 30
+
+  # 推 tag 时把产物发布成 Release，可直接从 Releases 页面下载（长期保留）
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all APKs
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -la dist
+          ( cd dist && sha256sum ./*.apk > SHA256SUMS.txt && cat SHA256SUMS.txt )
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，覆盖上传"
+            gh release upload "$TAG" dist/*.apk dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" dist/*.apk dist/SHA256SUMS.txt \
+              --title "$TAG" \
+              --notes "自动构建产物，SHA-256 见 SHA256SUMS.txt。"
+          fi
