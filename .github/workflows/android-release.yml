@@ -97,6 +97,13 @@ jobs:
           } > keystore.properties
           chmod 600 release.keystore keystore.properties
 
+      # 仓库里默认指向腾讯镜像（国内本地快）；CI runner 在境外，改回官方源更快
+      - name: Use official Gradle distribution
+        run: |
+          sed -i 's#mirrors\.cloud\.tencent\.com/gradle/#services.gradle.org/distributions/#g' \
+            gradle/wrapper/gradle-wrapper.properties
+          grep distributionUrl gradle/wrapper/gradle-wrapper.properties
+
       - name: Build release APK
         env:
           INPUT_CUSTOMER: ${{ github.event.inputs.customer }}
