@@ -168,12 +168,17 @@ jobs:
 
   # 产物按客户发布到各自的 Release（tag = 客户代号），便于「按客户找包」
   # 只有该客户构建成功才会更新它的 Release；单个客户失败不影响其他客户
+  # 另：若配了 DEPLOY_HOST + DEPLOY_SSH_KEY，还会把 APK 直接 scp 到自己的服务器
   release:
     needs: [prepare, build]
     if: ${{ always() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # 配了这两个 Secret 才会执行「上传到自己服务器」那两步，否则自动跳过
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
     steps:
       # gh release create 需要 git 上下文解析 tag，必须 checkout
       - name: Checkout
@@ -215,4 +220,48 @@ jobs:
                 --title "$tag" \
                 --notes "自动构建产物。SHA-256 见 SHA256SUMS.txt。"
             fi
+          done
+
+      # ===== 以下两步：把 APK 直接传到你自己的服务器（没配 Secret 自动跳过）=====
+      - name: Setup SSH
+        if: ${{ env.DEPLOY_HOST != '' && env.DEPLOY_SSH_KEY != '' }}
+        env:
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          if [ -n "$SSH_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+
+      - name: Deploy APKs to server
+        if: ${{ env.DEPLOY_HOST != '' && env.DEPLOY_SSH_KEY != '' }}
+        env:
+          TARGETS: ${{ needs.prepare.outputs.targets }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
+          DEPLOY_URL_BASE: ${{ vars.DEPLOY_URL_BASE }}
+        run: |
+          set -euo pipefail
+          DEPLOY_USER="${DEPLOY_USER:-root}"
+          DEPLOY_DIR="${DEPLOY_DIR:-/root/workspace/webserver/website/www/html/apk}"
+          DEPLOY_URL_BASE="${DEPLOY_URL_BASE:-https://file.foresh.com/apk}"
+          remote="${DEPLOY_USER}@${DEPLOY_HOST}"
+          ssh -o BatchMode=yes "$remote" "mkdir -p '${DEPLOY_DIR}'"
+          for c in $(printf '%s' "$TARGETS" | jq -r '.[]'); do
+            if [ "$c" = "_base" ]; then
+              asset="agent.apk"
+            else
+              asset="agent-$c.apk"
+            fi
+            if [ ! -f "dist/$asset" ]; then
+              echo "⚠️ 跳过 $c：找不到 dist/$asset"
+              continue
+            fi
+            scp -o BatchMode=yes "dist/$asset" "${remote}:${DEPLOY_DIR}/${asset}"
+            echo "✅ 已上传 ${asset} -> ${DEPLOY_URL_BASE%/}/${asset}"
           done

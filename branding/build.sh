@@ -74,7 +74,9 @@ publish_to_ci() {
 
   echo ""
   echo "🔗 下载地址（编译完成后可用）:"
-  echo "   ${download_url}"
+  # ① 需要先在 Secrets 里配 DEPLOY_HOST / DEPLOY_SSH_KEY，CI 才会把包传到服务器
+  echo "   ① 你的服务器 : ${UPLOAD_URL_BASE%/}/agent-${customer}.apk"
+  echo "   ② GitHub 备份: ${download_url}"
   echo "📋 构建进度: https://github.com/${repo}/actions"
 }
 

@@ -120,18 +120,26 @@ bash branding/ci-targets.sh
 
 ## 产物在哪
 
-**一个客户一个常驻 Release**（tag = 客户代号），里面永远是最新的那个包：
+**① 你自己的服务器（直接给客户/自己用）**
 
 ```
-https://github.com/kicer/h5apk/releases/tag/zcwx
-https://github.com/kicer/h5apk/releases/download/zcwx/agent-zcwx.apk
+https://file.foresh.com/apk/agent-<客户>.apk
+```
+
+CI 编译完会自动 scp 过去（需要先配下面两个 Secret，没配就自动跳过这步）。
+
+**② GitHub Release（按客户存档/备份）**
+
+```
+https://github.com/kicer/h5apk/releases/tag/<客户>
+https://github.com/kicer/h5apk/releases/download/<客户>/agent-<客户>.apk
 ```
 
 Release 内容：`agent-<客户>.apk` + `SHA256SUMS.txt`。
 
 - 某客户构建失败不影响其他客户（只有构建成功才会更新它的 Release）。
 - 每次运行的中间产物也保留在 Actions 的 Artifacts 里（30 天）。
-- ⚠️ 仓库是**私有**的，上面的下载链接**需要登录 GitHub** 才能点开。要给别人直接下载，得把仓库改成公开（那就应把真实 IP/域名从仓库挪到 Secrets）。
+- ⚠️ 仓库是**私有**的，GitHub 那个链接**需要登录**才能点开；发给客户用 ① 。
 
 ---
 
@@ -145,6 +153,26 @@ GitHub 仓库 → Settings → Secrets and variables → Actions → **Secrets**
 | `KEYSTORE_PASSWORD` | `keystore.properties` 里的 `storePassword` |
 | `KEY_ALIAS` | `agent` |
 | `KEY_PASSWORD` | `keystore.properties` 里的 `keyPassword` |
+
+想让 CI 编译完**直接把 APK 传到你自己的服务器**，再加两个 Secret（不加就自动跳过）：
+
+| Secret | 值 |
+|---|---|
+| `DEPLOY_HOST` | 服务器地址，CI 里无法解析你本地 ssh 的 `foresh` 别名，**必须写真实 IP/域名** |
+| `DEPLOY_SSH_KEY` | 专用部署私钥的全文（见下） |
+| `SSH_KNOWN_HOSTS`（可选） | `ssh-keyscan -H <服务器>` 的输出；不配则每次自动 keyscan |
+
+生成部署密钥（在你本机跑，不要用你个人密钥）：
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/deploy_h5apk -N '' -C 'gha-deploy'
+# 公钥装到服务器
+ssh-copy-id -i ~/.ssh/deploy_h5apk.pub root@<服务器>
+# 私钥全文（含 BEGIN/END 首尾行）复制到 DEPLOY_SSH_KEY
+cat ~/.ssh/deploy_h5apk
+```
+
+部署目标可用 Variables 覆盖（都可留空用默认值）：`DEPLOY_USER`（默认 `root`）、`DEPLOY_DIR`（默认 `/root/workspace/webserver/website/www/html/apk`）、`DEPLOY_URL_BASE`（默认 `https://file.foresh.com/apk`）。
 
 想覆盖配置项也可以在 **Variables** 里建 `BRAND_APP_NAME`、`BRAND_VERSION_CODE` 等（前缀 `BRAND_` + 配置项名大写）。
 
