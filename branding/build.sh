@@ -16,19 +16,22 @@ UPLOAD_DIR="${UPLOAD_DIR:-/root/workspace/webserver/website/www/html/apk}"
 UPLOAD_URL_BASE="${UPLOAD_URL_BASE:-https://file.foresh.com/apk}"
 
 usage() {
-  echo "用法: $0 [debug|release|all] [--clean] [--upload]" >&2
+  echo "用法: $0 [debug|release|all] [--clean] [--upload] [-Pkey=value ...]" >&2
   echo "  --clean   打包前先 clean" >&2
   echo "  --upload  打包后把 release APK 上传到 ${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-<customer>.apk 并打印下载地址" >&2
+  echo "  -Pkey=value  透传给 Gradle，覆盖 branding.properties（例：-Pcustomer=customerA -Pversion_code=100）" >&2
 }
 
 MODE="debug"
 CLEAN=0
 UPLOAD=0
+GRADLE_ARGS=""
 for arg in "$@"; do
   case "$arg" in
     debug|release|all) MODE="$arg" ;;
     --clean) CLEAN=1 ;;
     --upload) UPLOAD=1 ;;
+    -P*) GRADLE_ARGS="${GRADLE_ARGS} ${arg}" ;;
     -h|--help) usage; exit 0 ;;
     *) echo "❌ 未知参数: $arg" >&2; usage; exit 1 ;;
   esac
@@ -57,6 +60,10 @@ else
   echo "⚠️ 未找到 ${CONFIG} ，将使用 build.gradle 中的默认值" >&2
 fi
 
+if [ -n "$GRADLE_ARGS" ]; then
+  echo "⚙️  命令行覆盖（优先级高于上面的文件配置）:${GRADLE_ARGS}"
+fi
+
 case "$MODE" in
   release) TASKS="assembleRelease"; DIRS="release" ;;
   debug)   TASKS="assembleDebug"; DIRS="debug" ;;
@@ -67,7 +74,8 @@ if [ "$CLEAN" -eq 1 ]; then
   TASKS="clean $TASKS"
 fi
 
-./gradlew $TASKS --console=plain
+# shellcheck disable=SC2086
+./gradlew $TASKS $GRADLE_ARGS --console=plain
 
 echo ""
 echo "✅ 完成，本次生成的 APK："
@@ -79,6 +87,8 @@ for d in $DIRS; do
     echo "  $apk"
     if command -v shasum >/dev/null 2>&1; then
       echo "    SHA-256: $(shasum -a 256 "$apk" | awk '{print $1}')"
+    elif command -v sha256sum >/dev/null 2>&1; then
+      echo "    SHA-256: $(sha256sum "$apk" | awk '{print $1}')"
     fi
   done < <(find "app/build/outputs/apk/$d" -name "*.apk" 2>/dev/null)
 done

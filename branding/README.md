@@ -105,6 +105,50 @@ UPLOAD_URL_BASE=https://cdn.example.com/apk ./branding/build.sh release --upload
 
 限制：`--upload` 仅对 `release` / `all` 生效；`customer` 为空、`keystore.properties` 缺失（未签名）或找不到 release APK 时会直接报错中止，不会上传错误产物。
 
+## GitHub Actions 自动构建
+
+仓库已包含 `.github/workflows/android-release.yml`，推上去后在 GitHub 上自动打包，可选上传服务器。
+
+### 1. 配置 Secrets（一次性）
+
+Settings → Secrets and variables → Actions → New repository secret：
+
+| Secret | 必填 | 说明 |
+|---|---|---|
+| `KEYSTORE_BASE64` | ✅ | 签名库 `release.keystore` 的 base64 |
+| `KEYSTORE_PASSWORD` | ✅ | 密钥库密码 |
+| `KEY_ALIAS` | ✅ | 别名（当前为 `agent`） |
+| `KEY_PASSWORD` | ✅ | 密钥密码 |
+| `SSH_PRIVATE_KEY` | 可选 | 自动部署用的私钥（能登录 `root@服务器`） |
+| `DEPLOY_HOST` | 可选 | 服务器真实地址（如 `1.2.3.4`）。CI 里没有你本地的 `foresh` 主机别名，**必须写真实 IP/域名** |
+| `SSH_KNOWN_HOSTS` | 可选 | 不配则自动 `ssh-keyscan` |
+
+生成 `KEYSTORE_BASE64`：
+
+```bash
+base64 -i release.keystore | pbcopy    # macOS：直接进剪贴板
+base64 -i release.keystore | tr -d '\n'  # 或直接输出，整行复制
+```
+
+### 2. 触发方式
+
+- **手动**：Actions → `Build Android APK` → Run workflow（可填 `customer` 覆盖客户代号、勾选是否上传）。
+- **打 tag 自动**：`git tag v2.1.2 && git push origin v2.1.2`。
+
+产物在 workflow 的 Artifacts（`agent-release-apk`）；勾选上传时还会 scp 到服务器并打印 `https://file.foresh.com/apk/agent-<customer>.apk`。
+
+### 3. 命令行覆盖（本地 / CI 通用）
+
+`build.sh` 支持透传 `-P`，优先级：`-Pkey=value` > 环境变量 `BRAND_<KEY>` > `branding.properties` > 代码默认值。
+
+```bash
+./branding/build.sh release -Pcustomer=customerA -Pversion_code=100 -Pversion_name=1.0.0
+```
+
+同一套代码即可批量出包，无需改动或提交任何配置文件。
+
+> 为兼容 CI，图标生成已从 macOS 的 `sips` 换成纯 Java（ImageIO），默认图标也从 `.webp` 换成 `.png`（Java 读不了 WebP）；`gradle.properties` 加了 `-Djava.awt.headless=true`。
+
 ## 注意事项
 
 - `app_name`、`status_bar` 两个资源由 `build.gradle` 的 `resValue` 注入，**不要**再在 `res/values/strings.xml` 里定义同名资源。

@@ -10,9 +10,19 @@ def brandingPropsFile = new File(brandingDir, 'branding.properties')
 if (brandingPropsFile.exists()) {
     brandingPropsFile.withInputStream { brandingProps.load(it) }
 }
+// 取值优先级：-Pkey=value  >  环境变量 BRAND_<KEY>  >  branding.properties  >  代码默认值
+// 便于 CI（如 GitHub Actions matrix / tag）在不改文件的情况下按客户、版本出包
+// 例：./gradlew assembleRelease -Pcustomer=customerA -Pversion_code=100 -Pversion_name=1.0.0
 def brand = { String key, String fallback ->
-    def v = brandingProps.getProperty(key)
-    v = v == null ? null : v.trim()
+    def v = project.findProperty(key)
+    if (v == null) {
+        def envKey = 'BRAND_' + key.toUpperCase(Locale.ROOT).replaceAll('[^A-Z0-9]', '_')
+        v = System.getenv(envKey)
+    }
+    if (v == null) {
+        v = brandingProps.getProperty(key)
+    }
+    v = v == null ? null : v.toString().trim()
     return (v == null || v.isEmpty()) ? fallback : v
 }
 
@@ -191,15 +201,20 @@ android {
 }
 
 // ===== 图标生成：优先用 branding/icon/ic_launcher.png，否则用默认图标 =====
+// 纯 Java ImageIO 实现（不再依赖 macOS 的 sips），本地与 CI 行为一致
 // 每次构建重新生成到 branding/res/mipmap-*，无需手动清理
 def applyBrandingIcon = tasks.register('applyBrandingIcon') {
     description = 'Generate launcher icons into branding/res from branding/icon'
     doLast {
         def custom = new File(brandingDir, 'icon/ic_launcher.png')
-        def defaultIcon = new File(brandingDir, 'icon/default/ic_launcher.webp')
+        def defaultIcon = new File(brandingDir, 'icon/default/ic_launcher.png')
         def src = custom.exists() ? custom : defaultIcon
         if (!src.exists()) {
-            throw new GradleException("找不到图标源文件：${src}")
+            throw new GradleException("找不到图标源文件：${src}（请使用 PNG 格式）")
+        }
+        def sourceImage = javax.imageio.ImageIO.read(src)
+        if (sourceImage == null) {
+            throw new GradleException("无法解析图标（仅支持 PNG/JPG）：${src}")
         }
         def resDir = new File(brandingDir, 'res')
         [mdpi: 48, hdpi: 72, xhdpi: 96, xxhdpi: 144, xxxhdpi: 192].each { name, px ->
@@ -207,10 +222,18 @@ def applyBrandingIcon = tasks.register('applyBrandingIcon') {
             outDir.mkdirs()
             // 清掉旧图标，避免 png/webp 同名冲突
             outDir.listFiles()?.each { if (it.name.startsWith('ic_launcher.')) it.delete() }
-            project.exec {
-                commandLine 'sips', '-s', 'format', 'png', '-z', "${px}", "${px}",
-                        src.absolutePath, '--out', new File(outDir, 'ic_launcher.png').absolutePath
-            }
+            def scaled = new java.awt.image.BufferedImage(
+                    px, px, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            def g = scaled.createGraphics()
+            g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
+                    java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+            g.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING,
+                    java.awt.RenderingHints.VALUE_RENDER_QUALITY)
+            g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING,
+                    java.awt.RenderingHints.VALUE_ANTIALIAS_ON)
+            g.drawImage(sourceImage, 0, 0, px, px, null)
+            g.dispose()
+            javax.imageio.ImageIO.write(scaled, 'png', new File(outDir, 'ic_launcher.png'))
         }
         logger.lifecycle("applyBrandingIcon: 使用 ${src.name} (${src.parent}) 生成图标")
     }
