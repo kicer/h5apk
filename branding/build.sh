@@ -1,31 +1,90 @@
 #!/usr/bin/env bash
-# 一键换皮打包：改完 branding/branding.properties（和可选的 branding/icon/ic_launcher.png）后执行：
+# 一键换皮打包
+#
+# 【日常】只出一个客户 -> 推代码 + 触发 CI + 打印下载地址（本地不需要 JDK/Android SDK）：
+#   ./branding/build.sh customerA
+#
+# 【本地调试】本机编译：
 #   ./branding/build.sh            # 只打 debug 包
 #   ./branding/build.sh release    # 只打 release 包
 #   ./branding/build.sh all        # debug + release 一起打
 #   ./branding/build.sh release --clean    # 先 clean 再打 release
-#   ./branding/build.sh release --upload   # 打 release 并上传到服务器
+#   ./branding/build.sh release --upload   # 打 release 并上传到自己的服务器
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# ===== 上传目标（可用环境变量覆盖）=====
-# 远程文件名固定为 agent-<customer>.apk，customer 取自 branding.properties
+# ===== 上传目标（仅 --upload 用，可用环境变量覆盖）=====
 UPLOAD_TARGET="${UPLOAD_TARGET:-root@foresh}"
 UPLOAD_DIR="${UPLOAD_DIR:-/root/workspace/webserver/website/www/html/apk}"
 # 上传成功后打印的下载地址前缀（不带结尾斜杠）
 UPLOAD_URL_BASE="${UPLOAD_URL_BASE:-https://file.foresh.com/apk}"
 
+CI_WORKFLOW="android-release.yml"
+
 usage() {
-  echo "用法: $0 [debug|release|all] [--clean] [--upload] [-Pkey=value ...]" >&2
+  echo "用法:" >&2
+  echo "  $0 <客户代号>                    # 推代码 + 触发 CI，只打这个客户，打印下载地址" >&2
+  echo "  $0 [debug|release|all] [--clean] [--upload] [-Pkey=value ...]   # 本机编译" >&2
   echo "  --clean   打包前先 clean" >&2
-  echo "  --upload  打包后把 release APK 上传到 ${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-<customer>.apk 并打印下载地址" >&2
-  echo "  -Pkey=value  透传给 Gradle，覆盖 branding.properties（例：-Pcustomer=customerA -Pversion_code=100）" >&2
+  echo "  --upload  打包后上传到 ${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-<customer>.apk" >&2
+  echo "  -Pkey=value  透传给 Gradle，覆盖 branding.properties（例：-Pcustomer=customerA）" >&2
+}
+
+# 从 origin 推导 owner/repo，不依赖 gh
+repo_slug() {
+  local remote
+  remote="$(git remote get-url origin 2>/dev/null || true)"
+  printf '%s' "$remote" | sed -E 's#^git@github\.com:##; s#^https?://github\.com/##; s#\.git$##'
+}
+
+# ===== 日常模式：./branding/build.sh <客户代号> =====
+publish_to_ci() {
+  local customer="$1"
+  local repo download_url actions_url
+
+  if [ ! -f "branding/customers/${customer}.properties" ] && [ ! -f "branding/icon/${customer}.png" ]; then
+    echo "❌ 找不到客户 ${customer}" >&2
+    echo "   需要 branding/customers/${customer}.properties 或 branding/icon/${customer}.png" >&2
+    echo "   当前已识别的客户：$(bash branding/ci-targets.sh 2>/dev/null | sed -nE 's/^targets=//p')" >&2
+    exit 1
+  fi
+
+  repo="$(repo_slug)"
+  download_url="https://github.com/${repo}/releases/download/${customer}/agent-${customer}.apk"
+  actions_url="https://github.com/${repo}/actions/workflows/${CI_WORKFLOW}"
+
+  # 有改动就提交推送（CI 从仓库拉代码）
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "📦 提交并推送改动..."
+    git add -A
+    git commit -m "release ${customer}" >/dev/null
+    git push
+  else
+    echo "ℹ️ 没有未提交的改动，直接用当前代码"
+  fi
+
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    echo "🚀 触发 CI 构建：${customer}"
+    gh workflow run "${CI_WORKFLOW}" -f "customer=${customer}"
+  else
+    echo "⚠️ 未安装/未登录 GitHub CLI，无法直接触发。请二选一：" >&2
+    echo "   1) brew install gh && gh auth login   （之后可一键触发）" >&2
+    echo "   2) 到网页点 Run workflow，customer 填 ${customer}：" >&2
+    echo "      ${actions_url}" >&2
+    exit 1
+  fi
+
+  echo ""
+  echo "🔗 下载地址（编译完成后可用）:"
+  echo "   ${download_url}"
+  echo "📋 构建进度: https://github.com/${repo}/actions"
 }
 
 MODE="debug"
 CLEAN=0
 UPLOAD=0
 GRADLE_ARGS=""
+CUSTOMER=""
 for arg in "$@"; do
   case "$arg" in
     debug|release|all) MODE="$arg" ;;
@@ -33,9 +92,22 @@ for arg in "$@"; do
     --upload) UPLOAD=1 ;;
     -P*) GRADLE_ARGS="${GRADLE_ARGS} ${arg}" ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "❌ 未知参数: $arg" >&2; usage; exit 1 ;;
+    -*) echo "❌ 未知参数: $arg" >&2; usage; exit 1 ;;
+    *)
+      if [ -n "$CUSTOMER" ]; then
+        echo "❌ 只能指定一个客户（已给：${CUSTOMER}，又多了：${arg}）" >&2
+        exit 1
+      fi
+      CUSTOMER="$arg"
+      ;;
   esac
 done
+
+# 日常模式不需要 Java，放在 JDK 检查之前
+if [ -n "$CUSTOMER" ]; then
+  publish_to_ci "$CUSTOMER"
+  exit 0
+fi
 
 # 终端没有 JAVA_HOME 时，用 Android Studio 自带的 JBR
 if [ -z "${JAVA_HOME:-}" ]; then

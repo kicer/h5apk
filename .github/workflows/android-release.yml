@@ -165,10 +165,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # 推 tag 时把产物发布成 Release，可直接从 Releases 页面下载（长期保留）
+  # 产物按客户发布到各自的 Release（tag = 客户代号），便于「按客户找包」
+  # 只有该客户构建成功才会更新它的 Release；单个客户失败不影响其他客户
   release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [prepare, build]
+    if: ${{ always() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -179,19 +180,32 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Publish release
+      - name: Publish per-customer releases
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TARGETS: ${{ needs.prepare.outputs.targets }}
         run: |
           set -euo pipefail
           ls -la dist
-          ( cd dist && sha256sum ./*.apk > SHA256SUMS.txt && cat SHA256SUMS.txt )
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在，覆盖上传"
-            gh release upload "$TAG" dist/*.apk dist/SHA256SUMS.txt --clobber
-          else
-            gh release create "$TAG" dist/*.apk dist/SHA256SUMS.txt \
-              --title "$TAG" \
-              --notes "自动构建产物，SHA-256 见 SHA256SUMS.txt。"
-          fi
+          echo "客户列表: $TARGETS"
+          for c in $(printf '%s' "$TARGETS" | jq -r '.[]'); do
+            if [ "$c" = "_base" ]; then
+              tag="agent"; asset="agent.apk"
+            else
+              tag="$c"; asset="agent-$c.apk"
+            fi
+            if [ ! -f "dist/$asset" ]; then
+              echo "⚠️ 跳过 $c：找不到 dist/$asset"
+              continue
+            fi
+            ( cd dist && sha256sum "$asset" > SHA256SUMS.txt )
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "更新 Release: $tag"
+              gh release upload "$tag" "dist/$asset" dist/SHA256SUMS.txt --clobber
+            else
+              echo "创建 Release: $tag"
+              gh release create "$tag" "dist/$asset" dist/SHA256SUMS.txt \
+                --title "$tag" \
+                --notes "自动构建产物。SHA-256 见 SHA256SUMS.txt。"
+            fi
+          done

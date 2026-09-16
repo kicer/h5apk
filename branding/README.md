@@ -18,11 +18,13 @@
 3. 执行：
 
 ```bash
+./branding/build.sh customerA         # 出一客户的包：推代码 + 触发 CI + 打印下载地址（本地不用 JDK）
+
 ./branding/build.sh                   # 只打 debug 包（debug 调试签名，可直接安装）
 ./branding/build.sh release           # 只打 release 包（配了 keystore.properties 则自动签名）
 ./branding/build.sh all               # debug + release 一起打
 ./branding/build.sh release --clean   # 先 clean 再打包
-./branding/build.sh release --upload  # 打 release 并上传到服务器
+./branding/build.sh release --upload  # 打 release 并上传到自己的服务器
 ```
 
 脚本会自动定位 Android Studio 的 JDK、生成图标与 `network_security_config.xml`、编译，并打印 APK 路径与 SHA-256。
@@ -184,24 +186,38 @@ fixed_url=http://10.0.0.5:8091
 - 包名仍为 `application_id + "." + customer`（例：`com.foresh.agent.customerA`）。
 - 客户只需存在**图标**或**配置文件**任一，就会被列入构建目标。
 
-### 3. 触发方式（两种）
+### 3. 出包方式（三种）
 
-**A. 推 tag → 自动编译 → 自动发布到 Release**（推荐）
+**A. 一条命令出某个客户（日常用，推荐）**
 
 ```bash
-# 1. 给新客户加图标和/或配置
-#    branding/icon/customerA.png
-#    branding/customers/customerA.properties
-# 2. 改 branding.properties 的 version_code（必须递增）
-# 3. 打 tag 推上去
-git add -A && git commit -m "bump 2.1.3"
-git tag v2.1.3
-git push origin master --tags
+./branding/build.sh customerA
 ```
 
-跑完去仓库 **Releases** 页面，直接就有 `agent-<customer>.apk` 可下载，并附带 `SHA256SUMS.txt`。
+它会：提交推送当前改动 → 触发 CI **只打 customerA** → 立刻打印下载地址（此时通常还没编译完）：
 
-**打哪些客户：** 扫描 `branding/icon/<customer>.png` + `branding/customers/<customer>.properties`，再并入 `branding.properties` 里的 `customer`（自动去重）。所以「给 A 客户打包」= 把 A 的图/配置放进去 + 推个 tag。
+```
+🚀 触发 CI 构建：customerA
+🔗 下载地址（编译完成后可用）:
+   https://github.com/kicer/h5apk/releases/download/customerA/agent-customerA.apk
+```
+
+一次性准备：`brew install gh && gh auth login`。没装 gh 也能用，脚本会提示你到网页点 Run workflow。
+
+**B. 网页手动 Run workflow**
+
+Actions → `Build Android APK` → Run workflow：
+
+- `customer` **留空 = 全部客户**（每个客户各更新自己的 Release）
+- 填客户代号 = 只打这一个
+
+**C. 推 `v*` tag = 全量**
+
+```bash
+git tag v2.1.3 && git push origin master --tags
+```
+
+**打哪些客户：** 扫描 `branding/icon/<customer>.png` + `branding/customers/<customer>.properties`，再并入 `branding.properties` 里的 `customer`（自动去重）。指定客户时则只打它。
 
 本地可以预览会打哪些客户：
 
@@ -210,11 +226,20 @@ bash branding/ci-targets.sh
 # 构建目标: ["customerA","zcwx"]
 ```
 
-**B. 手动跑 → 只产出 Actions Artifacts**
+### 4. 产物去哪找
 
-Actions → `Build Android APK` → Run workflow。可指定 `customer`（只打这一个）、`version_code`、`version_name`；留空则用 Variables / `branding.properties`。手动跑**不会**建 Release，产物在当次运行的 Artifacts 里（保留 30 天）。
+**一个客户一个 Release**（tag = 客户代号），里面永远是最新的那个：
 
-### 4. 优先级
+```
+https://github.com/<owner>/<repo>/releases/tag/<customer>
+https://github.com/<owner>/<repo>/releases/download/<customer>/agent-<customer>.apk
+```
+
+每个 Release 里：`agent-<customer>.apk` + `SHA256SUMS.txt`。某个客户构建失败不影响其他客户（构建成功才会更新它的 Release）。
+
+> ⚠️ 仓库是私有的，所以这个下载链接**需要登录 GitHub** 才能用。要给别人直接点链接下载，得把仓库改成公开（那就建议把真实 IP/域名改从 Secrets 注入，别写在仓库里）。
+
+### 5. 优先级
 
 ```
 workflow 手动输入(-P)  >  GitHub Variables(BRAND_*)  >  branding/customers/<customer>.properties  >  branding.properties  >  代码默认值
