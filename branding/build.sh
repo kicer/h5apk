@@ -19,11 +19,9 @@ UPLOAD_DIR="${UPLOAD_DIR:-/root/workspace/webserver/website/www/html/apk}"
 # 上传成功后打印的下载地址前缀（不带结尾斜杠）
 UPLOAD_URL_BASE="${UPLOAD_URL_BASE:-https://file.foresh.com/apk}"
 
-CI_WORKFLOW="android-release.yml"
-
 usage() {
   echo "用法:" >&2
-  echo "  $0 <客户代号>                    # 推代码 + 触发 CI，只打这个客户，打印下载地址" >&2
+  echo "  $0 <客户代号>                    # 推代码 + 推同名 tag 触发 CI，只打这个客户，打印下载地址" >&2
   echo "  $0 [debug|release|all] [--clean] [--upload] [-Pkey=value ...]   # 本机编译" >&2
   echo "  --clean   打包前先 clean" >&2
   echo "  --upload  打包后上传到 ${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-<customer>.apk" >&2
@@ -40,9 +38,10 @@ repo_slug() {
 # ===== 日常模式：./branding/build.sh <客户代号> =====
 publish_to_ci() {
   local customer="$1"
-  local repo download_url actions_url
+  local repo download_url
 
-  if [ ! -f "branding/customers/${customer}.properties" ] && [ ! -f "branding/icon/${customer}.png" ]; then
+  # 用 ci-targets.sh 的同一套规则校验客户是否存在
+  if ! TAG="$customer" bash branding/ci-targets.sh >/dev/null 2>&1; then
     echo "❌ 找不到客户 ${customer}" >&2
     echo "   需要 branding/customers/${customer}.properties 或 branding/icon/${customer}.png" >&2
     echo "   当前已识别的客户：$(bash branding/ci-targets.sh 2>/dev/null | sed -nE 's/^targets=//p')" >&2
@@ -51,28 +50,27 @@ publish_to_ci() {
 
   repo="$(repo_slug)"
   download_url="https://github.com/${repo}/releases/download/${customer}/agent-${customer}.apk"
-  actions_url="https://github.com/${repo}/actions/workflows/${CI_WORKFLOW}"
 
   # 有改动就提交推送（CI 从仓库拉代码）
   if [ -n "$(git status --porcelain)" ]; then
     echo "📦 提交并推送改动..."
     git add -A
     git commit -m "release ${customer}" >/dev/null
-    git push
+    git push origin HEAD
   else
     echo "ℹ️ 没有未提交的改动，直接用当前代码"
   fi
 
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    echo "🚀 触发 CI 构建：${customer}"
-    gh workflow run "${CI_WORKFLOW}" -f "customer=${customer}"
-  else
-    echo "⚠️ 未安装/未登录 GitHub CLI，无法直接触发。请二选一：" >&2
-    echo "   1) brew install gh && gh auth login   （之后可一键触发）" >&2
-    echo "   2) 到网页点 Run workflow，customer 填 ${customer}：" >&2
-    echo "      ${actions_url}" >&2
-    exit 1
+  # 已存在且已指向当前提交的 tag，推送不会产生新事件 -> 提前告知
+  if git rev-parse -q --verify "refs/tags/${customer}" >/dev/null 2>&1 &&
+    [ "$(git rev-parse "refs/tags/${customer}")" = "$(git rev-parse HEAD)" ]; then
+    echo "⚠️ tag ${customer} 已经指向当前提交，本次推送不会触发构建" >&2
+    echo "   想强制重跑：到 Actions 页点 Re-run，或先改点东西再执行本命令" >&2
   fi
+
+  echo "🚀 触发 CI 构建：${customer}"
+  git tag -f "${customer}" >/dev/null
+  git push -f origin "refs/tags/${customer}"
 
   echo ""
   echo "🔗 下载地址（编译完成后可用）:"

@@ -194,7 +194,7 @@ fixed_url=http://10.0.0.5:8091
 ./branding/build.sh customerA
 ```
 
-它会：提交推送当前改动 → 触发 CI **只打 customerA** → 立刻打印下载地址（此时通常还没编译完）：
+它会：提交推送当前改动 → 推一个名为 `customerA` 的 tag → GitHub 收到 tag 事件识别出「这是 customerA」，只编译这一个 → 立刻打印下载地址（此时通常还没编译完）：
 
 ```
 🚀 触发 CI 构建：customerA
@@ -202,7 +202,9 @@ fixed_url=http://10.0.0.5:8091
    https://github.com/kicer/h5apk/releases/download/customerA/agent-customerA.apk
 ```
 
-一次性准备：`brew install gh && gh auth login`。没装 gh 也能用，脚本会提示你到网页点 Run workflow。
+> 原理就是推 tag，所以本地**只需要 git**，不需要 JDK/Android SDK、也不需要额外工具。
+> tag 会被强推到当前提交（同名 tag 每次滚动），GitHub 据此只编译指定客户。
+> 若改动未提交且 tag 已指向当前提交，推送不会产生事件，脚本会提醒你去 Actions 页 Re-run。
 
 **B. 网页手动 Run workflow**
 
@@ -211,13 +213,15 @@ Actions → `Build Android APK` → Run workflow：
 - `customer` **留空 = 全部客户**（每个客户各更新自己的 Release）
 - 填客户代号 = 只打这一个
 
-**C. 推 `v*` tag = 全量**
+**C. 推版本 tag = 全量**
 
 ```bash
 git tag v2.1.3 && git push origin master --tags
 ```
 
-**打哪些客户：** 扫描 `branding/icon/<customer>.png` + `branding/customers/<customer>.properties`，再并入 `branding.properties` 里的 `customer`（自动去重）。指定客户时则只打它。
+> tag 名形如 `v1.2.3` 会被当作版本号处理，打**全部**客户；其他 tag 必须与客户同名（否则报错退出）。
+
+**打哪些客户：** 指定客户时只打它；否则扫描 `branding/icon/<customer>.png` + `branding/customers/<customer>.properties`，再并入 `branding.properties` 里的 `customer`（自动去重）。
 
 本地可以预览会打哪些客户：
 
