@@ -5,8 +5,9 @@
 # 规则：
 #   1) 传入 INPUT_CUSTOMER 环境变量 -> 只构建它
 #   2) 否则扫描 branding/icon/<customer>.png（排除 ic_launcher.png），一张图一个客户
-#   3) 再并入 branding.properties 里的 customer
-#   4) 结果为空 -> ["_base"]（使用基础包名，不追加 customer）
+#   3) 再扫描 branding/customers/<customer>.properties（排除 _ 开头的模板）
+#   4) 再并入 branding.properties 里的 customer
+#   5) 结果为空 -> ["_base"]（使用基础包名，不追加 customer）
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -29,6 +30,16 @@ else
     if [ "$name" = "ic_launcher" ]; then
       continue
     fi
+    add "$name"
+  done
+  for f in branding/customers/*.properties; do
+    if [ ! -e "$f" ]; then
+      continue
+    fi
+    name="$(basename "$f" .properties)"
+    case "$name" in
+      _*) continue ;;
+    esac
     add "$name"
   done
   config_customer="$(sed -nE 's/^[[:space:]]*customer[[:space:]]*=[[:space:]]*//p' branding/branding.properties | tail -n 1)"

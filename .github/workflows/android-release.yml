@@ -115,10 +115,12 @@ jobs:
           } > keystore.properties
           chmod 600 release.keystore keystore.properties
 
-      # 仓库里默认指向腾讯镜像（国内本地快）；CI runner 在境外，改回官方源更快
+      # 仓库里默认指向腾讯镜像的 -all（国内本地已缓存，不要动）
+      # CI runner 在境外：换官方源，并降为体积更小的 -bin（省 70MB）
       - name: Use official Gradle distribution
         run: |
-          sed -i 's#mirrors\.cloud\.tencent\.com/gradle/#services.gradle.org/distributions/#g' \
+          sed -i -e 's#mirrors\.cloud\.tencent\.com/gradle/#services.gradle.org/distributions/#g' \
+                 -e 's#gradle-\([0-9][0-9.]*\)-all\.zip#gradle-\1-bin.zip#' \
             gradle/wrapper/gradle-wrapper.properties
           grep distributionUrl gradle/wrapper/gradle-wrapper.properties
 

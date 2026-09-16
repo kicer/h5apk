@@ -51,6 +51,8 @@
 
 值留空则回退默认值；但 `fixed_url` 必填，且配置错误（颜色 / 版本号 / 地址越界 / 包名非法 / 未配置任何 host）会在编译前直接报错。
 
+以上每一项都可以被覆盖：按客户用 `branding/customers/<customer>.properties`，按次用 `-Pkey=value` 或 `BRAND_*` 环境变量（见「每个客户一套配置」与「优先级」）。
+
 ### 同时支持 HTTP 固定 IP 与 HTTPS 域名
 
 在 `branding.properties` 里把两个地址都写上，`fixed_url` 选一个作为启动地址：
@@ -160,13 +162,36 @@ Settings → Secrets and variables → Actions → **Variables**。需要覆盖�
 >
 > 这样 CI 里只改 `BRAND_CUSTOMER` 就会自动换成对应图标。
 
+### 2.1 每个客户一套配置
+
+每个客户可以有自己的一份配置文件，覆盖 `fixed_url` / `app_name` / 域名 等任意项：
+
+```bash
+cp branding/customers/_template.properties branding/customers/customerA.properties
+# 只写需要覆盖的项，其余继承 branding.properties
+```
+
+```properties
+# branding/customers/customerA.properties
+app_name=客户A
+http_host=10.0.0.5
+http_port=8091
+fixed_url=http://10.0.0.5:8091
+```
+
+- 文件名就是客户代号（`customerA.properties` → `customer` 为 `customerA`）。
+- 文件名以 `_` 开头的不会被打包，所以 `_template.properties` 可以放心放在这。
+- 包名仍为 `application_id + "." + customer`（例：`com.foresh.agent.customerA`）。
+- 客户只需存在**图标**或**配置文件**任一，就会被列入构建目标。
+
 ### 3. 触发方式（两种）
 
 **A. 推 tag → 自动编译 → 自动发布到 Release**（推荐）
 
 ```bash
-# 1. 给新客户加图标（文件名 = 客户代号）
+# 1. 给新客户加图标和/或配置
 #    branding/icon/customerA.png
+#    branding/customers/customerA.properties
 # 2. 改 branding.properties 的 version_code（必须递增）
 # 3. 打 tag 推上去
 git add -A && git commit -m "bump 2.1.3"
@@ -176,7 +201,14 @@ git push origin master --tags
 
 跑完去仓库 **Releases** 页面，直接就有 `agent-<customer>.apk` 可下载，并附带 `SHA256SUMS.txt`。
 
-**打哪些客户由 `branding/icon/` 决定：** 每个 `branding/icon/<customer>.png` 打一个包，再并入 `branding.properties` 里的 `customer`（自动去重）。所以「给 A 客户打包」= 把 `A.png` 放进去 + 推个 tag。
+**打哪些客户：** 扫描 `branding/icon/<customer>.png` + `branding/customers/<customer>.properties`，再并入 `branding.properties` 里的 `customer`（自动去重）。所以「给 A 客户打包」= 把 A 的图/配置放进去 + 推个 tag。
+
+本地可以预览会打哪些客户：
+
+```bash
+bash branding/ci-targets.sh
+# 构建目标: ["customerA","zcwx"]
+```
 
 **B. 手动跑 → 只产出 Actions Artifacts**
 
@@ -185,7 +217,7 @@ Actions → `Build Android APK` → Run workflow。可指定 `customer`（只打
 ### 4. 优先级
 
 ```
-workflow 手动输入(-P)  >  GitHub Variables(BRAND_*)  >  branding.properties  >  代码默认值
+workflow 手动输入(-P)  >  GitHub Variables(BRAND_*)  >  branding/customers/<customer>.properties  >  branding.properties  >  代码默认值
 ```
 
 本地同理，`build.sh` 支持透传 `-P`：

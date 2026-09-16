@@ -10,17 +10,20 @@ def brandingPropsFile = new File(brandingDir, 'branding.properties')
 if (brandingPropsFile.exists()) {
     brandingPropsFile.withInputStream { brandingProps.load(it) }
 }
-// 取值优先级：-Pkey=value  >  环境变量 BRAND_<KEY>  >  branding.properties  >  代码默认值
-// 便于 CI（如 GitHub Actions variables）在不改文件的情况下按客户、版本出包
-// 例：./gradlew assembleRelease -Pcustomer=customerA -Pversion_code=100 -Pversion_name=1.0.0
+// 取值优先级：
+//   -Pkey=value  >  环境变量 BRAND_<KEY>  >  branding/customers/<customer>.properties
+//   >  branding.properties  >  代码默认值
 // 注意：环境变量为空串（CI 里 Variable 未配置的情况）视为「未设置」，继续往下回退
-//       而 -Pkey=（显式空串）视为「故意清空」，不再读文件
-def brand = { String key, String fallback ->
+//       而 -Pkey=（显式空串）视为「故意清空」，不再往下读文件
+def resolve = { String key, String fallback, Properties extra ->
     def v = project.findProperty(key)
     if (v == null) {
         def envKey = 'BRAND_' + key.toUpperCase(Locale.ROOT).replaceAll('[^A-Z0-9]', '_')
         def envVal = System.getenv(envKey)
         v = (envVal == null || envVal.isEmpty()) ? null : envVal
+    }
+    if (v == null && extra != null) {
+        v = extra.getProperty(key)
     }
     if (v == null) {
         v = brandingProps.getProperty(key)
@@ -29,10 +32,22 @@ def brand = { String key, String fallback ->
     return (v == null || v.isEmpty()) ? fallback : v
 }
 
+// 客户代号要先定下来，才能去加载对应客户的专属配置
+def cfgCustomer = resolve('customer', '', null)
+
+// 每个客户可以有自己的 branding/customers/<customer>.properties，
+// 覆盖 app_name / fixed_url / http_host / 域名 等任意项；没写的继承 branding.properties
+def customerProps = new Properties()
+def customerPropsFile = cfgCustomer ? new File(brandingDir, "customers/${cfgCustomer}.properties") : null
+if (customerPropsFile != null && customerPropsFile.exists()) {
+    customerPropsFile.withInputStream { customerProps.load(it) }
+    logger.lifecycle("客户配置: ${customerPropsFile.path}")
+}
+def brand = { String key, String fallback -> resolve(key, fallback, customerProps) }
+
 def cfgAppName = brand('app_name', 'Agent')
 def cfgStatusColor = brand('status_bar_color', '#3964FE')
 def cfgBaseAppId = brand('application_id', 'com.foresh.agent')
-def cfgCustomer = brand('customer', '')
 def cfgVersionCode = brand('version_code', '1')
 def cfgVersionName = brand('version_name', '1.0')
 
