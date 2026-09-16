@@ -11,13 +11,16 @@ if (brandingPropsFile.exists()) {
     brandingPropsFile.withInputStream { brandingProps.load(it) }
 }
 // 取值优先级：-Pkey=value  >  环境变量 BRAND_<KEY>  >  branding.properties  >  代码默认值
-// 便于 CI（如 GitHub Actions matrix / tag）在不改文件的情况下按客户、版本出包
+// 便于 CI（如 GitHub Actions variables）在不改文件的情况下按客户、版本出包
 // 例：./gradlew assembleRelease -Pcustomer=customerA -Pversion_code=100 -Pversion_name=1.0.0
+// 注意：环境变量为空串（CI 里 Variable 未配置的情况）视为「未设置」，继续往下回退
+//       而 -Pkey=（显式空串）视为「故意清空」，不再读文件
 def brand = { String key, String fallback ->
     def v = project.findProperty(key)
     if (v == null) {
         def envKey = 'BRAND_' + key.toUpperCase(Locale.ROOT).replaceAll('[^A-Z0-9]', '_')
-        v = System.getenv(envKey)
+        def envVal = System.getenv(envKey)
+        v = (envVal == null || envVal.isEmpty()) ? null : envVal
     }
     if (v == null) {
         v = brandingProps.getProperty(key)
@@ -206,11 +209,17 @@ android {
 def applyBrandingIcon = tasks.register('applyBrandingIcon') {
     description = 'Generate launcher icons into branding/res from branding/icon'
     doLast {
-        def custom = new File(brandingDir, 'icon/ic_launcher.png')
-        def defaultIcon = new File(brandingDir, 'icon/default/ic_launcher.png')
-        def src = custom.exists() ? custom : defaultIcon
-        if (!src.exists()) {
-            throw new GradleException("找不到图标源文件：${src}（请使用 PNG 格式）")
+        // 图标查找顺序：branding/icon/<customer>.png  >  branding/icon/ic_launcher.png  >  默认图标
+        // 多客户时把各自的 png 放进 branding/icon/，改 customer 即自动换图标
+        def candidates = []
+        if (cfgCustomer) {
+            candidates << new File(brandingDir, "icon/${cfgCustomer}.png")
+        }
+        candidates << new File(brandingDir, 'icon/ic_launcher.png')
+        candidates << new File(brandingDir, 'icon/default/ic_launcher.png')
+        def src = candidates.find { it.exists() }
+        if (src == null) {
+            throw new GradleException("找不到图标源文件，请放置 branding/icon/ic_launcher.png（PNG 格式）")
         }
         def sourceImage = javax.imageio.ImageIO.read(src)
         if (sourceImage == null) {

@@ -5,14 +5,17 @@ on:
   workflow_dispatch:
     inputs:
       customer:
-        description: 'customer 代号（留空 = 用 branding.properties 里的值）'
+        description: 'customer 代号（留空 = 用 Variables / branding.properties 的值）'
         required: false
         default: ''
-      upload:
-        description: '构建后上传到服务器'
-        type: boolean
+      version_code:
+        description: 'version_code（留空 = 用 Variables / branding.properties 的值）'
         required: false
-        default: false
+        default: ''
+      version_name:
+        description: 'version_name（留空 = 用 Variables / branding.properties 的值）'
+        required: false
+        default: ''
   # 打 tag（v*）自动出包
   push:
     tags:
@@ -28,10 +31,26 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # ===== 全部换皮配置项都可以在 GitHub 上配 =====
+    # 在 Settings → Secrets and variables → Actions → Variables 里新建同名 Variable 即可覆盖；
+    # 未配置的项自动回退到 branding.properties，因此这里全留空也能正常出包。
+    # 优先级：workflow 手动输入 -P > 这里的 Variable > branding.properties > 代码默认值
     env:
-      # 用于「配了才部署」的判断；未配置这些 secret 时为空
-      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
+      BRAND_STATUS_BAR_COLOR: ${{ vars.BRAND_STATUS_BAR_COLOR }}
+      BRAND_CUSTOMER: ${{ vars.BRAND_CUSTOMER }}
+      BRAND_APPLICATION_ID: ${{ vars.BRAND_APPLICATION_ID }}
+      BRAND_VERSION_CODE: ${{ vars.BRAND_VERSION_CODE }}
+      BRAND_VERSION_NAME: ${{ vars.BRAND_VERSION_NAME }}
+      BRAND_HTTP_HOST: ${{ vars.BRAND_HTTP_HOST }}
+      BRAND_HTTP_PORT: ${{ vars.BRAND_HTTP_PORT }}
+      BRAND_HTTPS_HOST: ${{ vars.BRAND_HTTPS_HOST }}
+      BRAND_HTTPS_PORT: ${{ vars.BRAND_HTTPS_PORT }}
+      BRAND_FIXED_URL: ${{ vars.BRAND_FIXED_URL }}
+      BRAND_FALLBACK_URL: ${{ vars.BRAND_FALLBACK_URL }}
+      BRAND_BLOCK_EXTERNAL_SUBRESOURCES: ${{ vars.BRAND_BLOCK_EXTERNAL_SUBRESOURCES }}
+      BRAND_OPEN_EXTERNAL_LINKS: ${{ vars.BRAND_OPEN_EXTERNAL_LINKS }}
+      BRAND_DEEP_LINK_PAGES: ${{ vars.BRAND_DEEP_LINK_PAGES }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,11 +91,19 @@ jobs:
 
       - name: Build release APK
         env:
-          CUSTOMER_INPUT: ${{ github.event.inputs.customer }}
+          INPUT_CUSTOMER: ${{ github.event.inputs.customer }}
+          INPUT_VERSION_CODE: ${{ github.event.inputs.version_code }}
+          INPUT_VERSION_NAME: ${{ github.event.inputs.version_name }}
         run: |
           ARGS=""
-          if [ -n "$CUSTOMER_INPUT" ]; then
-            ARGS="-Pcustomer=$CUSTOMER_INPUT"
+          if [ -n "$INPUT_CUSTOMER" ]; then
+            ARGS="$ARGS -Pcustomer=$INPUT_CUSTOMER"
+          fi
+          if [ -n "$INPUT_VERSION_CODE" ]; then
+            ARGS="$ARGS -Pversion_code=$INPUT_VERSION_CODE"
+          fi
+          if [ -n "$INPUT_VERSION_NAME" ]; then
+            ARGS="$ARGS -Pversion_name=$INPUT_VERSION_NAME"
           fi
           # shellcheck disable=SC2086
           ./branding/build.sh release $ARGS
@@ -88,27 +115,3 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
-
-      # 可选部署：配了 SSH_PRIVATE_KEY + DEPLOY_HOST 且勾选 upload 才会执行
-      - name: Deploy to server
-        if: ${{ github.event.inputs.upload == 'true' && env.SSH_PRIVATE_KEY != '' && env.DEPLOY_HOST != '' }}
-        env:
-          UPLOAD_TARGET: root@${{ secrets.DEPLOY_HOST }}
-          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
-          CUSTOMER_INPUT: ${{ github.event.inputs.customer }}
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          if [ -n "$SSH_KNOWN_HOSTS" ]; then
-            printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          else
-            ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          fi
-          ARGS=""
-          if [ -n "$CUSTOMER_INPUT" ]; then
-            ARGS="-Pcustomer=$CUSTOMER_INPUT"
-          fi
-          # 构建已缓存，这一步基本只做 scp 与打印下载地址
-          # shellcheck disable=SC2086
-          ./branding/build.sh release --upload $ARGS

@@ -85,17 +85,19 @@ fallback_url=http://192.168.1.100:8080   # 域名连不上时自动走 IP:8080
 
 > ⚠️ `release.keystore` 和 `keystore.properties` 不要提交到任何公开仓库；务必异地备份，签名证书换了就不能覆盖升级老用户的安装。release 固定开启 V1/V2/V3 签名与混淆 + 资源压缩。
 
-## 上传到服务器
+## 上传到服务器（本地可选）
 
-打包后自动把 release APK 上传到 Web 目录：
+> GitHub Actions 不做上传，只在本地需要时用这个命令。
+
+打包后把 release APK 上传到 Web 目录：
 
 ```bash
 ./branding/build.sh release --upload
 ```
 
-- 远程文件名取自 `branding.properties` 的 `customer`，即 `agent-<customer>.apk`（例：`customer=zclw` → `agent-zclw.apk`）。
+- 远程文件名取自 `branding.properties` 的 `customer`，即 `agent-<customer>.apk`（例：`customer=zcwx` → `agent-zcwx.apk`）。
 - 默认目标：`root@foresh:/root/workspace/webserver/website/www/html/apk/`。
-- 上传成功后会打印下载地址：`https://file.foresh.com/apk/agent-<customer>.apk`（例：`https://file.foresh.com/apk/agent-zclw.apk`）。
+- 上传成功后会打印下载地址：`https://file.foresh.com/apk/agent-<customer>.apk`（例：`https://file.foresh.com/apk/agent-zcwx.apk`）。
 - 可用环境变量覆盖，不需要改脚本：
 
 ```bash
@@ -107,47 +109,77 @@ UPLOAD_URL_BASE=https://cdn.example.com/apk ./branding/build.sh release --upload
 
 ## GitHub Actions 自动构建
 
-仓库已包含 `.github/workflows/android-release.yml`，推上去后在 GitHub 上自动打包，可选上传服务器。
+仓库已带 `.github/workflows/android-release.yml`：在 GitHub 上自动编译、签名并产出 APK artifact，**不需要上传服务器**。
 
-### 1. 配置 Secrets（一次性）
+### 1. 配置 Secrets（一次性，必填）
 
-Settings → Secrets and variables → Actions → New repository secret：
+Settings → Secrets and variables → Actions → **Secrets**：
 
-| Secret | 必填 | 说明 |
-|---|---|---|
-| `KEYSTORE_BASE64` | ✅ | 签名库 `release.keystore` 的 base64 |
-| `KEYSTORE_PASSWORD` | ✅ | 密钥库密码 |
-| `KEY_ALIAS` | ✅ | 别名（当前为 `agent`） |
-| `KEY_PASSWORD` | ✅ | 密钥密码 |
-| `SSH_PRIVATE_KEY` | 可选 | 自动部署用的私钥（能登录 `root@服务器`） |
-| `DEPLOY_HOST` | 可选 | 服务器真实地址（如 `1.2.3.4`）。CI 里没有你本地的 `foresh` 主机别名，**必须写真实 IP/域名** |
-| `SSH_KNOWN_HOSTS` | 可选 | 不配则自动 `ssh-keyscan` |
+| Secret | 说明 |
+|---|---|
+| `KEYSTORE_BASE64` | 签名库 `release.keystore` 的 base64 |
+| `KEYSTORE_PASSWORD` | 密钥库密码 |
+| `KEY_ALIAS` | 别名（当前为 `agent`） |
+| `KEY_PASSWORD` | 密钥密码 |
 
 生成 `KEYSTORE_BASE64`：
 
 ```bash
-base64 -i release.keystore | pbcopy    # macOS：直接进剪贴板
-base64 -i release.keystore | tr -d '\n'  # 或直接输出，整行复制
+base64 -i release.keystore | pbcopy       # macOS：直接进剪贴板
+base64 -i release.keystore | tr -d '\n'   # 或输出后整行复制
 ```
 
-### 2. 触发方式
+### 2. 配置项（全部可在 GitHub 上配，可选）
 
-- **手动**：Actions → `Build Android APK` → Run workflow（可填 `customer` 覆盖客户代号、勾选是否上传）。
+Settings → Secrets and variables → Actions → **Variables**。需要覆盖哪项就建哪个，**没建的自动用 `branding.properties` 的值**：
+
+| Variable | 对应 branding.properties |
+|---|---|
+| `BRAND_APP_NAME` | `app_name` |
+| `BRAND_STATUS_BAR_COLOR` | `status_bar_color` |
+| `BRAND_CUSTOMER` | `customer` |
+| `BRAND_APPLICATION_ID` | `application_id` |
+| `BRAND_VERSION_CODE` | `version_code` |
+| `BRAND_VERSION_NAME` | `version_name` |
+| `BRAND_HTTP_HOST` | `http_host` |
+| `BRAND_HTTP_PORT` | `http_port` |
+| `BRAND_HTTPS_HOST` | `https_host` |
+| `BRAND_HTTPS_PORT` | `https_port` |
+| `BRAND_FIXED_URL` | `fixed_url` |
+| `BRAND_FALLBACK_URL` | `fallback_url` |
+| `BRAND_BLOCK_EXTERNAL_SUBRESOURCES` | `block_external_subresources` |
+| `BRAND_OPEN_EXTERNAL_LINKS` | `open_external_links` |
+| `BRAND_DEEP_LINK_PAGES` | `deep_link_pages` |
+
+命名规则：`BRAND_` + 配置项名大写（非字母数字转 `_`）。未配置的 Variable 会展开成空串，已被视为“未设置”自动回退，不会把 `branding.properties` 的值冲掉。
+
+> 图标不是文本配置项，无法用 Variable 传文件。多客户时把各自的 `png` 放进 `branding/icon/`，按以下顺序自动选择：
+> 1. `branding/icon/<customer>.png`（例：`branding/icon/zcwx.png`）
+> 2. `branding/icon/ic_launcher.png`（通用）
+> 3. `branding/icon/default/ic_launcher.png`（兜底）
+>
+> 这样 CI 里只改 `BRAND_CUSTOMER` 就会自动换成对应图标。
+
+### 3. 触发方式
+
+- **手动**：Actions → `Build Android APK` → Run workflow，可临时填 `customer` / `version_code` / `version_name`。
 - **打 tag 自动**：`git tag v2.1.2 && git push origin v2.1.2`。
 
-产物在 workflow 的 Artifacts（`agent-release-apk`）；勾选上传时还会 scp 到服务器并打印 `https://file.foresh.com/apk/agent-<customer>.apk`。
+产物在 workflow 的 Artifacts（`agent-release-apk`），下载即已签名 APK。
 
-### 3. 命令行覆盖（本地 / CI 通用）
+### 4. 优先级
 
-`build.sh` 支持透传 `-P`，优先级：`-Pkey=value` > 环境变量 `BRAND_<KEY>` > `branding.properties` > 代码默认值。
-
-```bash
-./branding/build.sh release -Pcustomer=customerA -Pversion_code=100 -Pversion_name=1.0.0
+```
+workflow 手动输入(-P)  >  GitHub Variables(BRAND_*)  >  branding.properties  >  代码默认值
 ```
 
-同一套代码即可批量出包，无需改动或提交任何配置文件。
+本地同理，`build.sh` 支持透传 `-P`：
 
-> 为兼容 CI，图标生成已从 macOS 的 `sips` 换成纯 Java（ImageIO），默认图标也从 `.webp` 换成 `.png`（Java 读不了 WebP）；`gradle.properties` 加了 `-Djava.awt.headless=true`。
+```bash
+./branding/build.sh release -Pcustomer=customerA -Pversion_code=100
+```
+
+> 为兼容 CI，图标生成已从 macOS 的 `sips` 换成纯 Java（ImageIO），默认图标从 `.webp` 换成 `.png`（Java 读不了 WebP）；`gradle.properties` 加了 `-Djava.awt.headless=true`。
 
 ## 注意事项
 
