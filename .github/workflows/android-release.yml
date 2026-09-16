@@ -175,6 +175,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # gh release create 需要 git 上下文解析 tag，必须 checkout
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
       - name: Download all APKs
         uses: actions/download-artifact@v5
         with:
