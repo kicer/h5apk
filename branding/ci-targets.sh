@@ -12,8 +12,7 @@
 #
 # 「已知客户」= branding/customers/<customer>.properties
 #            或 branding/icon/<customer>.png
-#            或 branding.properties 里的 customer
-# 「全部客户」= 上述前两者全扫一遍 + branding.properties 里的 customer（自动去重）
+# 「全部客户」= 上述两个目录里的文件名（_ 开头的除外）
 # 结果为空 -> ["_base"]（使用基础包名，不追加 customer）
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -26,11 +25,6 @@ add() {
   esac
 }
 
-# branding.properties 里配置的 customer（可能为空）
-config_customer() {
-  sed -nE 's/^[[:space:]]*customer[[:space:]]*=[[:space:]]*//p' branding/branding.properties | tail -n 1
-}
-
 is_known_customer() {
   local name="$1"
   if [ -z "$name" ]; then
@@ -40,9 +34,6 @@ is_known_customer() {
     return 0
   fi
   if [ -f "branding/icon/${name}.png" ]; then
-    return 0
-  fi
-  if [ "$name" = "$(config_customer)" ]; then
     return 0
   fi
   return 1
@@ -70,11 +61,6 @@ collect_all() {
     esac
     add "$name"
   done
-  local cfg
-  cfg="$(config_customer)"
-  if [ -n "$cfg" ]; then
-    add "$cfg"
-  fi
 }
 
 if [ -n "${INPUT_CUSTOMER:-}" ]; then
@@ -86,8 +72,8 @@ elif [ -n "${TAG:-}" ]; then
     collect_all
   else
     echo "❌ 未知 tag：${TAG}" >&2
-    echo "   客户 tag 必须与 branding/customers/<客户>.properties、branding/icon/<客户>.png" >&2
-    echo "   或 branding.properties 里的 customer 一致；版本 tag 用 v1.2.3 形式（打全部客户）" >&2
+    echo "   客户 tag 必须与 branding/customers/<客户>.properties 或 branding/icon/<客户>.png 同名" >&2
+    echo "   版本 tag 用 v1.2.3 形式（打全部客户）" >&2
     exit 1
   fi
 else

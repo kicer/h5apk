@@ -221,7 +221,7 @@ git tag v2.1.3 && git push origin master --tags
 
 > tag 名形如 `v1.2.3` 会被当作版本号处理，打**全部**客户；其他 tag 必须与客户同名（否则报错退出）。
 
-**打哪些客户：** 指定客户时只打它；否则扫描 `branding/icon/<customer>.png` + `branding/customers/<customer>.properties`，再并入 `branding.properties` 里的 `customer`（自动去重）。
+**打哪些客户：** 指定客户时只打它；否则扫描 `branding/customers/<customer>.properties` + `branding/icon/<customer>.png`（`_` 开头的除外）。**客户列表就是这两个目录里的文件名**，`branding.properties` 不再参与客户识别。
 
 本地可以预览会打哪些客户：
 
