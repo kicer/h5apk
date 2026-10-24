@@ -20,12 +20,13 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.util.Locale;
 
 /**
  * 语音输入的原生录音桥，由 MainActivity 注入为 {@code window.AgentNative}。
  *
  * <p>契约见仓库根目录 {@code voice-input.md}：页面调用 startVoice / stopVoice / cancelVoice，
- * 壳通过 {@code window.onNativeVoiceState('recording')}、
+ * 壳通过 {@code window.onNativeVoiceState('recording')}、{@code window.onNativeVoiceLevel(level)}、
  * {@code window.onNativeVoiceResult(base64, mime)}、{@code window.onNativeVoiceError(code, message)}
  * 回调。
  *
@@ -49,12 +50,18 @@ public final class VoiceBridge {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable autoStop = this::stopOnMain;
 
+    // 实时电平：每 100ms 读一次 getMaxAmplitude()，交给页面画声波
+    private static final long LEVEL_INTERVAL_MS = 100L;
+    private final Runnable levelTick = this::tickLevel;
+
     private State state = State.IDLE;
     private MediaRecorder recorder;
     private File file;
     // 每次录音递增；取消后旧编码线程的结果直接丢弃，不会回传到新会话
     private int session;
     private boolean destroyed;
+    // 授权弹窗期间用户已经松手（stopVoice 早于权限结果）：授权后不要再凭空开录
+    private boolean stopWhileWaiting;
 
     public VoiceBridge(Activity activity, WebView webView) {
         this.activity = activity;
@@ -119,15 +126,23 @@ public final class VoiceBridge {
                 return;
             }
             state = State.IDLE;
+            boolean stopRequested = stopWhileWaiting;
+            stopWhileWaiting = false;
             // 用户点返回/点外部取消时 grantResults 为空
             boolean granted = grantResults != null && grantResults.length > 0
                     && grantResults[0] == PackageManager.PERMISSION_GRANTED;
-            if (granted) {
-                // 授权后直接开录，不要求用户再点一次
-                beginRecording();
-            } else {
+            if (!granted) {
                 fail("no_permission", "需要麦克风权限");
+                return;
             }
+            if (stopRequested) {
+                // 按住说话时用户得松手去点「允许」，这段录音已经不存在了，
+                // 绝不能授权后凭空开一段没人停的麦
+                fail("too_short", "说话时间太短，请按住再说");
+                return;
+            }
+            // 还在按住（或手指又落下来）：授权后直接开录，不要求用户再点一次
+            beginRecording();
         });
     }
 
@@ -137,6 +152,7 @@ public final class VoiceBridge {
         if (destroyed || state != State.IDLE) {
             return; // 防连点 / 防并发
         }
+        stopWhileWaiting = false;
         // 第三方 CDN 脚本同样能调这个桥：只允许自家页面 + App 在前台时录音
         if (!UrlPolicy.isAllowed(webView.getUrl()) || !activity.hasWindowFocus()) {
             fail("forbidden", "当前页面不允许录音");
@@ -200,6 +216,7 @@ public final class VoiceBridge {
             session++;
             state = State.RECORDING;
             main.postDelayed(autoStop, MAX_RECORD_MS);
+            main.postDelayed(levelTick, LEVEL_INTERVAL_MS);
             // 页面在自己的 UI 上已经有「录音中」，这里再加一条原生提示：
             // 脚本静默调桥时，用户至少看得见麦克风确实开了
             Toast.makeText(activity, "正在录音…", Toast.LENGTH_SHORT).show();
@@ -212,11 +229,40 @@ public final class VoiceBridge {
         fail("start_failed", "无法开始录音");
     }
 
+    /**
+     * 每 100ms 读一次峰值振幅（0~32767），按 log10 映射到 0~1 交给页面画声波。
+     * 壳不做平滑，页面侧自己做快攻慢放。
+     */
+    private void tickLevel() {
+        if (state != State.RECORDING || recorder == null) {
+            return;
+        }
+        double level = 0;
+        try {
+            int amp = recorder.getMaxAmplitude(); // 距上次调用以来的峰值，0 表示还没采到
+            if (amp > 0) {
+                level = Math.log10(1 + amp) / Math.log10(32768);
+            }
+        } catch (Exception ignored) {
+            // getMaxAmplitude 个别机型会抛，按静音处理
+        }
+        js("window.onNativeVoiceLevel && window.onNativeVoiceLevel("
+                + String.format(Locale.US, "%.3f", level) + ")");
+        main.postDelayed(levelTick, LEVEL_INTERVAL_MS);
+    }
+
     private void stopOnMain() {
+        if (state == State.WAITING_PERMISSION) {
+            // 按住说话的常见路径：手指抬起去点「允许」时页面已经 stopVoice 了。
+            // 记下来，等权限结果回来时不要开始一段没人停的录音。
+            stopWhileWaiting = true;
+            return;
+        }
         if (state != State.RECORDING) {
             return;
         }
         main.removeCallbacks(autoStop);
+        main.removeCallbacks(levelTick);
         state = State.ENCODING;
 
         final int mySession = session;
@@ -241,7 +287,7 @@ public final class VoiceBridge {
         if (!stopped || f == null) {
             delete(f);
             state = State.IDLE;
-            fail("too_short", "没有录到声音");
+            fail("too_short", "说话时间太短，请按住再说");
             return;
         }
 
@@ -279,8 +325,10 @@ public final class VoiceBridge {
      */
     private void cancelOnMain(boolean notify) {
         main.removeCallbacks(autoStop);
+        main.removeCallbacks(levelTick);
         boolean pageWaiting = state == State.RECORDING || state == State.ENCODING;
         session++; // 让正在编码的旧结果作废
+        stopWhileWaiting = false;
         releaseQuietly();
         delete(file);
         file = null;

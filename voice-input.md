@@ -1,7 +1,7 @@
 # 语音输入：客户端录音契约
 
-链路是「客户端录音 → `POST /api/asr/transcribe` → 文字插入输入框」。服务端只收音频字节，
-不关心是谁录的。`public/js/voice.js` 按能力自己选录音方式：
+链路是「按住说话 → 客户端录音 → `POST /api/asr/transcribe` → 转写结果**自动发送**」。
+服务端只收音频字节，不关心是谁录的。`public/js/voice.js` 按能力自己选录音方式：
 
 | 页面环境 | 录音方式 | 说明 |
 |---|---|---|
@@ -9,13 +9,24 @@
 | 浏览器 / PWA（HTTPS） | `MediaRecorder` | 标准 `getUserMedia`，不用改壳 |
 | 纯浏览器（`http://<IP>`） | 不可用 | 非安全上下文，浏览器拒绝开麦 |
 
-**按钮什么时候显示**（`voice.js` 判定，两个条件都要满足）：
+**发送键的四种状态**（`sessions.js` 的 `updateSendBtn` 决定）：
 
-1. 有录音能力：`window.AgentNative.startVoice` 存在（原生桥），**或** `isSecureContext && getUserMedia && MediaRecorder`；
-2. 服务端接线：`GET /api/asr/status` 返回 `enabled !== false`。
+| `data-state` | 什么时候 | 点击行为 |
+|---|---|---|
+| `stop` | 生成中且输入框为空 | 停止当前回合（优先级最高，不被语音入口顶掉） |
+| `voice` | 空闲、无文字无附件、且语音可用 | 进入语音模式 |
+| `keyboard` | 已在语音模式 | 回键盘模式，聚焦输入框（移动端弹键盘） |
+| `send` | 其余情况 | 发送 |
 
-所以**套壳 App 里即使页面是 `http://`，只要桥注入成功，按钮照样显示**；「按钮不显示」
-只发生在「既没有桥、又不是安全上下文」的纯浏览器里。两条都没有时不做灰按钮。
+「语音可用」= ①有录音能力（原生桥，或安全上下文下的 `MediaRecorder`）②`GET /api/asr/status`
+返回 `enabled !== false`。所以**套壳 App 里即使页面是 `http://`，只要桥注入成功，麦克风入口照样出现**；
+纯浏览器 `http://<IP>` 不会出现（非安全上下文，浏览器禁止开麦）。
+
+语音模式下输入框被 `#voice-hold` 取代（只有居中文字，无按钮外观）：按住后整块输入区被
+**全宽遮罩**盖住（`#voice-overlay`，向左右各扩到屏幕边缘），遮罩里是「实时电平声波 + 提示文案」。
+手指上滑进入文案区域 → 取消态（声波与文案变红，文案改为「松开取消」），滑回下方恢复；
+松手时取消态则丢弃 + 轻提示「已取消」，否则转写并直接发送。松手后遮罩保持到识别结束，
+文案换成「正在识别…」。发送键变成键盘按钮。
 
 ---
 
@@ -53,12 +64,18 @@ window.AgentNative = {
 ```js
 window.onNativeVoiceResult(base64, mime)   // mime 例：'audio/mp4'
 window.onNativeVoiceError(code, message)   // 见下方错误码表
-window.onNativeVoiceState('recording')     // 可选：真正开始录时调一次
+window.onNativeVoiceState('recording')     // 建议实现：真正开始录时调一次
+window.onNativeVoiceLevel(level)           // 建议实现：0~1 实时电平，驱动遮罩里的声波
 ```
 
-- `onNativeVoiceState('recording')`：**建议实现**。页面在点击时就把按钮切到「录音中」，
-  而首次授权弹窗可能吃掉 1~5 秒；收到这个回调后，页面的 60 秒上限才从「真正开始录」重新计时。
-  不实现也不影响使用（继续按点击时刻计时，最多少录几秒）。
+- `onNativeVoiceLevel(level)`：`MediaRecorder.getMaxAmplitude()` 返回 0~32767，换算成
+  `level = log10(1 + amp) / log10(32768)`，主线程每 **100ms** 回调一次。不实现也能用：
+  页面会退化成拟态波（正弦 + 伪随机），只是不随真实音量变化。
+  JS 侧还要自己做快攻慢放平滑，壳不需要平滑。
+- `onNativeVoiceState('recording')`：**按住说话的时长判定依赖它**。页面用这个回调重置
+  「60 秒上限」和「太短丢弃」的起点，避免首次授权弹窗的时间被算进录音。不实现也不会崩：
+  页面按点击时刻计时，代价是首次授权那一次会被当成「太短」丢弃（用户再按一次即可）。
+- 页面收到 `onNativeVoiceResult` 后会直接发送消息（不经过输入框、不可编辑）。
 - 所有回调都必须在**主线程**调 `webView.evaluateJavascript`。
 - 字符串一律用 `JSONObject.quote(...)` 拼，不要手写 `'` 转义——异常 message 里可能有
   `\`、换行、U+2028，会把整段脚本打断。
@@ -72,9 +89,9 @@ window.onNativeVoiceState('recording')     // 可选：真正开始录时调一�
 |---|---|---|
 | `no_permission` | 用户拒绝 / 取消授权弹窗 | toast「需要麦克风权限」 |
 | `start_failed` | `prepare()` / `start()` 抛异常（含回退 MIC 后仍失败） | toast |
-| `too_short` | `stop()` 抛异常（录音 < ~1s） | toast「没有录到声音」 |
+| `too_short` | `stop()` 抛异常（录音 < ~1s） | toast「说话时间太短，请按住再说」，**不上传** |
 | `read_failed` | 读临时文件失败 | toast |
-| `cancelled` | 生命周期打断（切后台 / 换页 / 页面主动 cancel） | **静默复位，不弹提示** |
+| `cancelled` | 生命周期打断（切后台 / 换页） | **静默复位，不弹提示** |
 | 其他未知 code | — | toast 里显示 `message`，没有就显示 code |
 
 **取消语义**：页面在 `stopVoice()` 之后会一直等结果（直到点击后 90 秒的硬超时），
@@ -86,7 +103,9 @@ window.onNativeVoiceState('recording')     // 可选：真正开始录时调一�
 - 16kHz / 32kbps / 单声道 AAC：60 秒 ≈ **240KB**，Base64 后 ≈ **320KB**。
 - `evaluateJavascript` 走 Binder，单次约 1MB 上限；320KB 安全，但**不要再延长单次时长**。
   真要 2 分钟以上，改成按段回传或本地 HTTP 回传。
-- 页面侧硬超时：点击后 120 秒没有结果就强制复位（防止壳异常时按钮永久卡死）。
+- 松开后页面最多等 3 秒拿音频（等不到就复位，覆盖「壳还在等权限」的情况）；
+  拿到后上传+识别，正常 1~2 秒。
+- 按住时间 < 500ms 视为误触：页面直接丢弃，不上传；壳自己的 `too_short` 是第二道保险。
 
 ---
 
@@ -108,6 +127,23 @@ public final class VoiceBridge {
     private final WebView webView;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable autoStop = this::stopOnMain;
+
+    // 实时电平：每 100ms 读一次 getMaxAmplitude() 交给页面画声波
+    private static final long LEVEL_INTERVAL_MS = 100;
+    private final Runnable levelTick = this::tickLevel;
+
+    private void tickLevel() {
+        MediaRecorder r = recorder;
+        if (state != State.RECORDING || r == null) return;
+        double v = 0;
+        try {
+            int amp = r.getMaxAmplitude();               // 0 ~ 32767
+            if (amp > 0) v = Math.log10(1 + amp) / Math.log10(32768);
+        } catch (Exception ignored) { }
+        js("window.onNativeVoiceLevel && window.onNativeVoiceLevel("
+                + String.format(java.util.Locale.US, "%.3f", v) + ")");
+        main.postDelayed(levelTick, LEVEL_INTERVAL_MS);
+    }
 
     private State state = State.IDLE;
     private MediaRecorder recorder;
@@ -169,9 +205,11 @@ public final class VoiceBridge {
         int[] sources = {MediaRecorder.AudioSource.VOICE_RECOGNITION,
                          MediaRecorder.AudioSource.MIC};
         for (int source : sources) {
+            File f = null;
+            MediaRecorder r = null;
             try {
-                File f = File.createTempFile("voice", ".m4a", activity.getCacheDir());
-                MediaRecorder r = Build.VERSION.SDK_INT >= 31
+                f = File.createTempFile("voice", ".m4a", activity.getCacheDir());
+                r = Build.VERSION.SDK_INT >= 31
                         ? new MediaRecorder(activity)   // 无参构造在 API 31 起废弃
                         : new MediaRecorder();
                 r.setAudioSource(source);
@@ -188,12 +226,18 @@ public final class VoiceBridge {
                 file = f;
                 state = State.RECORDING;
                 main.postDelayed(autoStop, MAX_MS);
+                main.postDelayed(levelTick, LEVEL_INTERVAL_MS);
                 // 让页面的 60s 从“真的开始录”算（授权弹窗的时间不算）
                 js("window.onNativeVoiceState && window.onNativeVoiceState('recording')");
                 // 建议再加一个原生提示（Toast「正在录音…」）：页面自己也可以被第三方脚本调用
                 return;
             } catch (Exception e) {
-                releaseQuietly();
+                // 局部变量释放：失败时 recorder 字段还没赋值，releaseQuietly() 管不到它
+                if (r != null) {
+                    try { r.stop(); } catch (Exception ignored) { }
+                    try { r.release(); } catch (Exception ignored) { }
+                }
+                delete(f);
             }
         }
         state = State.IDLE;
@@ -203,6 +247,7 @@ public final class VoiceBridge {
     private void stopOnMain() {
         if (state != State.RECORDING) return;
         main.removeCallbacks(autoStop);
+        main.removeCallbacks(levelTick);   // 停止上报电平
         state = State.ENCODING;
 
         MediaRecorder r = recorder;
@@ -239,6 +284,7 @@ public final class VoiceBridge {
     /** notify=true：页面在等结果，必须回 cancelled 让它复位；onDestroy 时页面已走，不必回。 */
     private void cancelOnMain(boolean notify) {
         main.removeCallbacks(autoStop);
+        main.removeCallbacks(levelTick);
         boolean wasActive = state != State.IDLE;
         releaseQuietly();
         delete(file);
@@ -345,4 +391,4 @@ Cookie: <登录态>                # 与页面同一份 HttpOnly cookie
 
 - Android WebView 没有实现 `SpeechRecognition`；iOS WKWebView 同样不可用（只有 Safari 有）。
 - 桌面 Chrome 的识别走 Google 服务，国内基本报 `network`。
-- 三端行为不一致、错误码各异，最后还是要留一条服务端通路——不如只留一条。
+- 三端行为不一致、错误码各异，最后还要留一条服务端通路——不如只留一条。
