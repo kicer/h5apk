@@ -263,32 +263,23 @@ def applyBrandingIcon = tasks.register('applyBrandingIcon') {
     }
 }
 
-// ===== 网络安全配置生成：只对固定 HTTP IP 开放明文，其余一律禁明文 =====
-// HTTPS 域名无需在此声明（base-config 只限制明文，HTTPS 始终允许）
+// ===== 网络安全配置生成 =====
+// 服务器地址可在首次启动时手动填写（典型为 http://IP:8090），所以必须放开明文；
+// 实际能加载哪些 origin 由运行时 UrlPolicy 的单一 origin 白名单约束，不是放开任意网址。
 def generateNetworkSecurityConfig = tasks.register('generateNetworkSecurityConfig') {
-    description = 'Generate res/xml/network_security_config.xml from branding.properties'
+    description = 'Generate res/xml/network_security_config.xml (cleartext allowed, origin limited at runtime)'
     doLast {
         def outDir = new File(brandingDir, 'res/xml')
         outDir.mkdirs()
-        def cleartextHosts = []
-        if (cfgHttpHost) {
-            cleartextHosts << cfgHttpHost
-        }
         def sb = new StringBuilder()
         sb << '<?xml version="1.0" encoding="utf-8"?>\n'
-        sb << '<!-- 由 branding/build.sh 自动生成，请勿手改；改 branding.properties 后重新构建 -->\n'
+        sb << '<!-- 由 Gradle 自动生成，请勿手改；改 branding.properties 后重新构建 -->\n'
         sb << '<network-security-config>\n'
-        sb << '    <base-config cleartextTrafficPermitted="false" />\n'
-        if (!cleartextHosts.isEmpty()) {
-            sb << '    <domain-config cleartextTrafficPermitted="true">\n'
-            cleartextHosts.unique().each { host ->
-                sb << "        <domain includeSubdomains=\"false\">${host}</domain>\n"
-            }
-            sb << '    </domain-config>\n'
-        }
+        sb << '    <!-- 允许手动填写的 http://IP:端口 服务器（仅限运行时单一 origin） -->\n'
+        sb << '    <base-config cleartextTrafficPermitted="true" />\n'
         sb << '</network-security-config>\n'
         new File(outDir, 'network_security_config.xml').text = sb.toString()
-        logger.lifecycle("generateNetworkSecurityConfig: 明文白名单 = ${cleartextHosts}")
+        logger.lifecycle("generateNetworkSecurityConfig: 明文已放开（自用单包，地址由运行时 origin 白名单约束）")
     }
 }
 

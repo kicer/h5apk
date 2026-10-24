@@ -9,7 +9,7 @@ import java.util.Map;
  * 深链页面路由：只认 {@code agent://open?page=xxx} 中枚举的固定页面。
  *
  * 严禁接受外部传入的完整 URL；页面名 -> 路径的映射由 branding.properties 的
- * deep_link_pages 在编译期写死，运行时无法修改。
+ * deep_link_pages 在编译期写死，运行时无法修改；解析结果仍受限当前生效的服务器 origin。
  */
 public final class PageRouter {
 
@@ -47,8 +47,8 @@ public final class PageRouter {
             return null;
         }
         try {
-            // 基于固定启动地址做相对解析，保证结果仍落在白名单 origin 内
-            String url = new URI(BuildConfig.AGENT_FIXED_URL).resolve(path).toString();
+            // 基于当前生效的启动地址做相对解析，保证结果仍落在白名单 origin 内
+            String url = new URI(ServerConfig.startUrl()).resolve(path).toString();
             return UrlPolicy.isAllowed(url) ? url : null;
         } catch (Exception e) {
             return null;

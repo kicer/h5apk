@@ -1,8 +1,9 @@
 # 换皮打包
 
-换应用名 / 图标 / 状态栏颜色 / 包名 / 版本号 / **服务端地址**，全程不改源码。
+换应用名 / 图标 / 状态栏颜色 / 包名 / 版本号 / **默认服务端地址**，全程不改源码。
 
-> 所有地址均为**编译期写死**，装成 APK 后无法修改，也不提供任何「输入网址」入口。
+> 默认地址在编译期写死；首次启动可由用户手动填一个 origin（IP/域名 + 端口），
+> 之后运行时仍只放行这一个 origin，不会变成能打开任意网址的浏览器。
 
 ## 使用步骤
 
@@ -41,12 +42,12 @@
 | `application_id` | `com.foresh.agent` | 基础包名。不要用 `com.a1` 这类随机包名 |
 | `version_code` | `1` | 整数，覆盖安装升级时必须递增 |
 | `version_name` | `1.0` | 展示用版本号 |
-| `http_host` | _(空)_ | HTTP 直连固定 IP（`network_security_config` 只对它开放明文） |
+| `http_host` | _(空)_ | HTTP 直连固定 IP（默认地址之一；明文已全局放开，供手动填写的 IP 使用） |
 | `http_port` | `8080` | HTTP 直连端口 |
 | `https_host` | _(空)_ | HTTPS 固定域名 |
 | `https_port` | `443` | HTTPS 端口 |
-| `fixed_url` | **必填** | 启动地址，必须是上面两个地址之一，且 host/port 完全一致 |
-| `fallback_url` | _(空)_ | 备用地址，启动地址首次加载失败时切换一次 |
+| `fixed_url` | **必填** | 默认启动地址（用户首次启动没手填地址时用它），必须是上面两个地址之一 |
+| `fallback_url` | _(空)_ | 默认地址加载失败时切换一次；仅在手填地址为空时生效 |
 | `block_external_subresources` | `true` | 拦截非白名单子资源；H5 依赖第三方 CDN 时设为 `false` |
 | `open_external_links` | `true` | 外部 http(s) 链接点击后交系统浏览器打开；`false` = 直接拦截 |
 | `deep_link_pages` | `home:/,tasks:/tasks` | 深链枚举页，`name:path` 逗号分隔 |
@@ -68,7 +69,8 @@ fixed_url=https://agent.ai.foresh.com
 fallback_url=http://192.168.1.100:8080   # 域名连不上时自动走 IP:8080
 ```
 
-白名单同时放行这两个 origin；`network_security_config.xml` 只对 `http_host` 开放明文，其余一律禁明文（HTTPS 域名无需声明，始终允许）。
+白名单同时放行这两个 origin（仅在用户没手填地址时）；`network_security_config.xml` 已全局放开明文，
+因为首次启动允许手动填 `http://IP:端口`。实际能否加载由运行时 `UrlPolicy` 的单一 origin 白名单决定。
 
 - `agent://` 深链只接受枚举页面：`agent://open?page=home`、`agent://open?page=tasks`；**禁止**传入完整 URL。
 - WebView 跳转 / 重定向 / 下载 / 上传 / 子资源都会过白名单：白名单内地址在 App 内加载；外部 http(s) 链接按 `open_external_links` 交系统浏览器；其他协议（`tel`/`mailto`/`intent` 等）一律拦截。
@@ -210,36 +212,37 @@ fixed_url=http://10.0.0.5:8091
 
 Actions → `Build Android APK` → Run workflow：
 
-- `customer` **留空 = 全部客户**（每个客户各更新自己的 Release）
-- 填客户代号 = 只打这一个
+- `customer` **留空 = 单包**（`com.foresh.agent`，产物 `agent.apk`）
+- 填 `all` = 全部客户（每个客户各一个包）
+- 填客户代号 = 只打这一个（历史换皮用法）
 
-**C. 推版本 tag = 全量**
+**C. 推版本 tag = 单包**
 
 ```bash
-git tag v2.1.3 && git push origin master --tags
+git tag v2.2.0 && git push origin master --tags
 ```
 
-> tag 名形如 `v1.2.3` 会被当作版本号处理，打**全部**客户；其他 tag 必须与客户同名（否则报错退出）。
+> `v1.2.3` 形式 → 出**单包**（`_base`）；客户名 tag → 只打该客户（历史兼容）；其他 tag 报错退出。
 
-**打哪些客户：** 指定客户时只打它；否则扫描 `branding/customers/<customer>.properties` + `branding/icon/<customer>.png`（`_` 开头的除外）。**客户列表就是这两个目录里的文件名**，`branding.properties` 不再参与客户识别。
+**打哪些包：** 不指定客户时只出**单包**（`_base`）；指定客户时才扫 `branding/customers/<customer>.properties` + `branding/icon/<customer>.png`（`_` 开头的除外）。**客户列表就是这两个目录里的文件名**。
 
-本地可以预览会打哪些客户：
+本地可以预览本次会打哪些目标：
 
 ```bash
 bash branding/ci-targets.sh
-# 构建目标: ["customerA","zcwx"]
+# 构建目标: ["_base"]
 ```
 
 ### 4. 产物去哪找
 
-**一个客户一个 Release**（tag = 客户代号），里面永远是最新的那个：
+**单包**（默认）：Release tag = `agent`，产物 `agent.apk`：
 
 ```
-https://github.com/<owner>/<repo>/releases/tag/<customer>
-https://github.com/<owner>/<repo>/releases/download/<customer>/agent-<customer>.apk
+https://github.com/<owner>/<repo>/releases/tag/agent
+https://github.com/<owner>/<repo>/releases/download/agent/agent.apk
 ```
 
-每个 Release 里：`agent-<customer>.apk` + `SHA256SUMS.txt`。某个客户构建失败不影响其他客户（构建成功才会更新它的 Release）。
+**按客户换皮**（历史用法）：一个客户一个 Release（tag = 客户代号），产物 `agent-<customer>.apk`。
 
 > ⚠️ 仓库是私有的，所以这个下载链接**需要登录 GitHub** 才能用。要给别人直接点链接下载，得把仓库改成公开（那就建议把真实 IP/域名改从 Secrets 注入，别写在仓库里）。
 
@@ -266,8 +269,9 @@ bash branding/ci-targets.sh
 ## 注意事项
 
 - `app_name`、`status_bar` 两个资源由 `build.gradle` 的 `resValue` 注入，**不要**再在 `res/values/strings.xml` 里定义同名资源。
-- 权限只保留 `INTERNET`；`allowBackup=false`；组件 `exported` 最小化（仅 `MainActivity`）。
-- 不使用动态加载 / 热更新 / 插件化 / `addJavascriptInterface`；`fixed_url`、IP、端口全部写在 `BuildConfig`，运行时不从 Intent 接收。
+- 权限：`INTERNET` + `RECORD_AUDIO`（语音输入）；`allowBackup=false`；组件 `exported` 最小化（仅 `MainActivity`）。
+- 不使用动态加载 / 热更新 / 插件化；`fixed_url`、IP、端口默认写在 `BuildConfig`，运行时只允许用户在设置页填一个 origin，不接受 Intent 传入的完整 URL。
+- 因为允许手填 `http://IP:端口`，`usesCleartextTraffic=true` + `base-config cleartextTrafficPermitted=true`（自用取舍）。
 - 换 `application_id` 或加 `customer` = 新应用（与旧包共存，数据不互通）。
 - 图标只替换了传统 mipmap 图标；如需 Android 8+ 自适应图标（前景/背景分层）再扩展。
 

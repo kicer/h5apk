@@ -58,7 +58,7 @@ public class MainActivity extends AppCompatActivity {
     private CountDownTimer retryTimer;
     private static final int RETRY_DELAY = 10000; // 10秒后重试
 
-    // 当前加载地址：只可能是白名单内的固定地址
+    // 当前加载地址：只会是白名单 origin 内的地址
     private String currentUrl;
     // 启动地址失败后是否已尝试过备用地址（避免反复横跳）
     private boolean fallbackAttempted = false;
@@ -67,21 +67,36 @@ public class MainActivity extends AppCompatActivity {
     private ValueCallback<Uri[]> filePathCallback;
     private static final int FILE_CHOOSER_RESULT_CODE = 100;
 
+    // ===== 服务器地址设置 =====
+    private static final int REQ_SETUP = 200;
+
     // ===== 语音录音桥 =====
     private VoiceBridge voiceBridge;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // 必须先于任何 UrlPolicy 调用：这里加载「允许的 origin」白名单
+        ServerConfig.init(this);
         setContentView(R.layout.activity_main);
 
         applyStatusBarColor();
         initViews();
         setupWebView();
 
-        // 启动地址：深链枚举页 > 编译期固定地址；不存在「用户填写网址」这条路径
+        if (!ServerConfig.isSetupDone()) {
+            // 首次启动：先让用户填服务器地址（可留空走默认），回来后再加载页面
+            startActivityForResult(new Intent(this, ServerSetupActivity.class)
+                    .putExtra(ServerSetupActivity.EXTRA_FIRST_RUN, true), REQ_SETUP);
+            return;
+        }
+        loadStartPage();
+    }
+
+    /** 启动地址：深链枚举页 > 当前生效的服务器地址（手动配置优先，否则编译期默认）。 */
+    private void loadStartPage() {
         String deepLink = resolveDeepLink(getIntent());
-        loadUrl(deepLink != null ? deepLink : BuildConfig.AGENT_FIXED_URL);
+        loadUrl(deepLink != null ? deepLink : ServerConfig.startUrl());
     }
 
     /**
@@ -109,6 +124,9 @@ public class MainActivity extends AppCompatActivity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        if (!ServerConfig.isSetupDone()) {
+            return; // 首次设置还没完成，等设置页返回后再处理
+        }
         String deepLink = resolveDeepLink(intent);
         if (deepLink != null) {
             loadUrl(deepLink);
@@ -220,6 +238,15 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_SETUP) {
+            if (resultCode == RESULT_OK) {
+                // 服务器地址可能变了：旧 origin 的历史记录不能留着
+                webView.clearHistory();
+                currentUrl = null;
+                loadStartPage();
+            }
+            return;
+        }
         if (requestCode == FILE_CHOOSER_RESULT_CODE) {
             if (filePathCallback == null) {
                 return;
@@ -293,8 +320,12 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** 启动地址失败时切换到备用地址（只尝试一次）。 */
+    /** 启动地址失败时切换到备用地址（只尝试一次；手动配置的地址不自动切换）。 */
     private boolean tryFallback() {
+        if (ServerConfig.hasOverride()) {
+            // 用户明确填了地址，填错就让他改，不要静默换到别的服务器
+            return false;
+        }
         String fallback = BuildConfig.AGENT_FALLBACK_URL;
         if (fallbackAttempted || fallback == null || fallback.isEmpty()) {
             return false;
@@ -511,12 +542,15 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // 不再提供「更换网址」入口：地址由编译期写死，用户无法修改
+    // 退出前菜单：可改服务器地址、清缓存、退出
     private void showExitDialog() {
         new AlertDialog.Builder(this)
                 .setTitle(R.string.app_name)
-                .setItems(new CharSequence[]{"清空缓存", "退出应用"}, (dialog, which) -> {
+                .setItems(new CharSequence[]{"服务器设置", "清空缓存", "退出应用"}, (dialog, which) -> {
                     if (which == 0) {
+                        startActivityForResult(
+                                new Intent(this, ServerSetupActivity.class), REQ_SETUP);
+                    } else if (which == 1) {
                         clearWebCache();
                     } else {
                         finish();

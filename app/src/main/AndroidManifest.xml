@@ -13,7 +13,7 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
         android:theme="@style/Theme.AppCompat.Light.NoActionBar"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name="com.foresh.agent.MainActivity"
@@ -39,5 +39,12 @@
                     android:scheme="agent" />
             </intent-filter>
         </activity>
+
+        <!-- 服务器地址设置页：首次启动与「返回键菜单 → 服务器设置」，不对外导出 -->
+        <activity
+            android:name="com.foresh.agent.ServerSetupActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 </manifest>

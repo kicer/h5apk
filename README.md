@@ -1,9 +1,10 @@
 # h5app —— H5 壳 APK 打包
 
-把固定网址的 H5 页面封装成 Android APK，一套代码给多个客户批量出包。
+把 H5 页面封装成 Android APK。默认一个包（`com.foresh.agent`）走到底，也能按客户换皮。
 
-**核心特点：地址、包名、图标全部在编译期写死，装成 APK 后无法修改。**
-不提供任何「输入网址」入口，不是马甲包工具。
+**地址默认在编译期写死；首次启动允许用户手动填一个服务器 origin（IP/域名 + 端口），
+之后运行时只放行这一个 origin——仍然是单站点壳，不是浏览器。**
+包名、图标在编译期固定。
 
 ---
 
@@ -30,33 +31,37 @@ branding/
 
 ---
 
-## 快速上手：给一个客户出包
+## 快速上手：出一版（单包）
 
 ```bash
-# 1. 建配置（客户代号 = 文件名，小写字母/数字/下划线，字母开头）
-cp branding/customers/_template.properties branding/customers/customerA.properties
-vim branding/customers/customerA.properties       # 填这个客户的地址
+# 1. 改版本号（覆盖安装时 version_code 必须递增）
+vim branding/branding.properties
 
-# 2. 放图标（可选）
-cp ~/a.png branding/icon/customerA.png
-
-# 3. 出包（本地只需要 git）
-./branding/build.sh customerA
+# 2. 出包（本地只需要 git）
+./branding/build.sh v2.2.0
 ```
 
 输出：
 
 ```
 📦 提交并推送改动...
-🚀 触发 CI 构建：customerA
+🚀 触发 CI 构建：v2.2.0（单包）
 🔗 下载地址（编译完成后可用）:
-   https://github.com/kicer/h5apk/releases/download/customerA/agent-customerA.apk
-📋 构建进度: https://github.com/kicer/h5apk/actions
+   ① 你的服务器 : https://file.foresh.com/apk/agent.apk
+   ② GitHub 备份: https://github.com/kicer/h5apk/releases/download/agent/agent.apk
 ```
 
-**只会编译 customerA，不碰其他客户。** 本地不需要 JDK / Android SDK。
+包名固定 `com.foresh.agent`，产物 `agent.apk`。首次启动会让用户填服务器地址（可跳过）。
 
 > 打开这个命令时 CI 通常还没编译完，链接要等 1~4 分钟才可用（首次更久）。
+
+### 历史用法：按客户换皮
+
+```bash
+cp branding/customers/_template.properties branding/customers/customerA.properties
+cp ~/a.png branding/icon/customerA.png
+./branding/build.sh customerA    # 包名变成 com.foresh.agent.customerA
+```
 
 ---
 
@@ -86,10 +91,10 @@ bash branding/ci-targets.sh
 | `status_bar_color` | 状态栏颜色 `#RRGGBB` |
 | `application_id` | 基础包名（一般不用改） |
 | `version_code` / `version_name` | 版本号；`version_code` 覆盖安装时必须递增 |
-| `http_host` / `http_port` | HTTP 直连地址（`network_security_config` 只对它开放明文） |
+| `http_host` / `http_port` | HTTP 直连地址（明文已全局放开，供手动填写的 `http://IP:端口` 使用） |
 | `https_host` / `https_port` | HTTPS 域名 |
-| `fixed_url` | 启动地址，必须是上面两个地址之一，host/port 写法要完全一致（**必填**） |
-| `fallback_url` | 启动地址加载失败时自动切换一次（可选） |
+| `fixed_url` | **默认**启动地址，必须是上面两个地址之一（用户首次启动没手填地址时用它，**必填**） |
+| `fallback_url` | 默认地址加载失败时自动切换一次（可选；手填地址时不生效） |
 | `block_external_subresources` | 是否拦截非白名单子资源，默认 `true` |
 | `open_external_links` | 外部 http(s) 链接是否交系统浏览器打开，默认 `true` |
 | `deep_link_pages` | 深链枚举页，格式 `name:path`，逗号分隔 |
@@ -106,13 +111,14 @@ bash branding/ci-targets.sh
 
 ## 出包的三种方式
 
-| 方式 | 用途 | 打多少客户 |
+| 方式 | 用途 | 打多少包 |
 |---|---|---|
-| `./branding/build.sh <客户>` | **日常**，加/改一个客户 | 只打该客户 |
-| Actions 页 → Run workflow | 网页操作；`customer` 留空 | 留空 = 全部客户 |
-| `git tag v2.1.3 && git push origin master --tags` | 版本 tag | 全部客户 |
+| `./branding/build.sh v2.2.0` | **日常**（单包） | 1 个：`com.foresh.agent` → `agent.apk` |
+| `./branding/build.sh <客户>` | 历史：按客户换皮 | 只打该客户 |
+| Actions 页 → Run workflow | 网页操作；`customer` 留空 | 留空 = 单包；填 `all` = 全部客户 |
+| `git tag v2.2.0 && git push origin master --tags` | 版本 tag | 单包 |
 
-**原理**：`build.sh <客户>` 就是把一个**和客户同名的 tag** 强推到当前提交；CI 收到 tag 事件后判断「tag 名是不是已知客户」——是就只打它，是 `v1.2.3` 形式就打全部，都不是则直接报错退出。
+**原理**：`build.sh <tag>` 就是把同名 tag 强推到当前提交；CI 收到 tag 事件后判断——是已知客户名就只打该客户，是 `v1.2.3` 形式就打单包（`_base`），都不是则报错退出。
 
 > 同名 tag 每次滚动更新（`git push -f`），所以不存在一堆历史 tag。
 
@@ -190,14 +196,27 @@ cat ~/.ssh/deploy_h5apk
 
 | 项 | 做法 |
 |---|---|
-| 地址白名单 | 所有加载/跳转/重定向/下载/上传/子资源都过 `UrlPolicy`，只放行编译期写死的地址 |
+| 地址白名单 | 所有加载/跳转/重定向/下载/上传/子资源都过 `UrlPolicy`，只放行当前生效的**单一 origin**（默认来自编译期，手填后只放行手填的那个） |
 | 深链 | 只支持 `agent://open?page=home` 这类枚举页，**禁止**外部传入完整 URL |
-| 明文流量 | `usesCleartextTraffic=false` + `network_security_config` 仅对 `http_host` 开放明文 |
+| 明文流量 | `usesCleartextTraffic=true` + `base-config cleartextTrafficPermitted=true`：允许手填 `http://IP:8090` 的自用取舍，地址仍受单一 origin 约束 |
 | WebView | 关文件访问、关第三方 Cookie、关自动播放、混合内容 `NEVER_ALLOW`；JS 桥仅暴露语音录音（`VoiceBridge`，3 个无参方法，无文件/存储读写能力） |
 | 权限 | `INTERNET` + `RECORD_AUDIO`（语音输入）；`allowBackup=false`；`exported` 最小化 |
 | 混淆 | release 开启 `minifyEnabled` + `shrinkResources`，V1/V2/V3 签名 |
 
 详见 `branding/README.md`。
+
+---
+
+## 单包与首次设置
+
+默认只出一个包：`applicationId=com.foresh.agent`，产物 `agent.apk`（版本 tag 或手动 Run workflow 留空 customer）。
+
+- **首次启动**弹原生设置页：「服务器地址」只填 IP 或域名，端口默认 `8090`（写 `https://` 则默认 443）；
+  留空或点「跳过」就用手填为空时的默认地址（`fixed_url`）。
+- **改地址**：返回键菜单 →「服务器设置」（与「清空缓存」「退出应用」并列）。
+- **解析规则**：只接受 origin，带路径/参数/账号一律报错；`1.2.3.4` → `http://1.2.3.4:8090`。
+- 手填地址**不会**自动切到 `fallback_url`（填错就改，不静默换服务器）。
+- 仍在出按客户换皮的包时的兼容：`./branding/build.sh <客户>` 或 workflow 里填客户代号，包名变成 `com.foresh.agent.<客户>`（与单包不互通）。
 
 ---
 
@@ -229,3 +248,5 @@ cat ~/.ssh/deploy_h5apk
 | 页面链接点了没反应 | `open_external_links=false` 会拦截外链 |
 | 点麦克风提示「需要麦克风权限」 | 之前拒绝过权限；到系统设置 → 应用 → 权限里打开麦克风（「不再询问」不会再弹窗） |
 | 页面没有麦克风按钮 | 服务端 `GET /api/asr/status` 返回 `enabled:false`（`ASR_URL` 未配置），或页面既无桥又非 HTTPS |
+| 首次启动停在「服务器地址」页 | 预期行为；直接点「跳过，使用默认地址」即可 |
+| 填完地址打不开、想换回域名 | 返回键 → 「服务器设置」→「恢复默认地址」 |

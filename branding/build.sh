@@ -22,6 +22,7 @@ UPLOAD_URL_BASE="${UPLOAD_URL_BASE:-https://file.foresh.com/apk}"
 usage() {
   echo "用法:" >&2
   echo "  $0 <客户代号>                    # 推代码 + 推同名 tag 触发 CI，只打这个客户，打印下载地址" >&2
+  echo "  $0 v2.2.0                        # 推代码 + 推版本 tag，CI 打单包（com.foresh.agent → agent.apk）" >&2
   echo "  $0 [debug|release|all] [--clean] [--upload] [-Pkey=value ...]   # 本机编译" >&2
   echo "  --clean   打包前先 clean" >&2
   echo "  --upload  打包后上传到 ${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-<customer>.apk" >&2
@@ -38,18 +39,29 @@ repo_slug() {
 # ===== 日常模式：./branding/build.sh <客户代号> =====
 publish_to_ci() {
   local customer="$1"
-  local repo download_url
+  local repo download_url asset
+  local is_version=0
+  if printf '%s' "$customer" | grep -qE '^v[0-9]'; then
+    is_version=1
+  fi
 
-  # 用 ci-targets.sh 的同一套规则校验客户是否存在
+  # 用 ci-targets.sh 的同一套规则校验 tag 是否可用
   if ! TAG="$customer" bash branding/ci-targets.sh >/dev/null 2>&1; then
-    echo "❌ 找不到客户 ${customer}" >&2
-    echo "   需要 branding/customers/${customer}.properties 或 branding/icon/${customer}.png" >&2
-    echo "   当前已识别的客户：$(bash branding/ci-targets.sh 2>/dev/null | sed -nE 's/^targets=//p')" >&2
+    echo "❌ 无效的目标 ${customer}" >&2
+    echo "   客户包：需要 branding/customers/${customer}.properties 或 branding/icon/${customer}.png" >&2
+    echo "   单  包：用版本号形式，例：v2.2.0" >&2
     exit 1
   fi
 
   repo="$(repo_slug)"
-  download_url="https://github.com/${repo}/releases/download/${customer}/agent-${customer}.apk"
+  if [ "$is_version" -eq 1 ]; then
+    # 单包：workflow 里 _base 固定发布到 tag=agent / agent.apk
+    asset="agent.apk"
+    download_url="https://github.com/${repo}/releases/download/agent/agent.apk"
+  else
+    asset="agent-${customer}.apk"
+    download_url="https://github.com/${repo}/releases/download/${customer}/${asset}"
+  fi
 
   # 有改动就提交推送（CI 从仓库拉代码）
   if [ -n "$(git status --porcelain)" ]; then
@@ -68,14 +80,14 @@ publish_to_ci() {
     echo "   想强制重跑：到 Actions 页点 Re-run，或先改点东西再执行本命令" >&2
   fi
 
-  echo "🚀 触发 CI 构建：${customer}"
+  echo "🚀 触发 CI 构建：${customer}"$([ "$is_version" -eq 1 ] && echo "（单包）")
   git tag -f "${customer}" >/dev/null
   git push -f origin "refs/tags/${customer}"
 
   echo ""
   echo "🔗 下载地址（编译完成后可用）:"
   # ① 需要先在 Secrets 里配 DEPLOY_HOST / DEPLOY_SSH_KEY，CI 才会把包传到服务器
-  echo "   ① 你的服务器 : ${UPLOAD_URL_BASE%/}/agent-${customer}.apk"
+  echo "   ① 你的服务器 : ${UPLOAD_URL_BASE%/}/${asset}"
   echo "   ② GitHub 备份: ${download_url}"
   echo "📋 构建进度: https://github.com/${repo}/actions"
 }
