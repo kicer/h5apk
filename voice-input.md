@@ -65,14 +65,13 @@ window.AgentNative = {
 window.onNativeVoiceResult(base64, mime)   // mime 例：'audio/mp4'
 window.onNativeVoiceError(code, message)   // 见下方错误码表
 window.onNativeVoiceState('recording')     // 建议实现：真正开始录时调一次
-window.onNativeVoiceLevel(level)           // 建议实现：0~1 实时电平，驱动遮罩里的声波
+window.onNativeVoiceAmp(amp)               // 建议实现：0~32767 原始幅度，驱动遮罩里的声波
 ```
 
-- `onNativeVoiceLevel(level)`：`MediaRecorder.getMaxAmplitude()` 返回 0~32767，换算成
-  `db = 20 * log10(amp / 32767)`，`level = clamp((db + 55) / 50, 0, 1)`
-  （-55dB 以下静音、-5dB 以上封顶，与浏览器端 `AnalyserNode` 的 dB 口径一致），
-  主线程每 **100ms** 回调一次。不实现也能用：页面会退化成拟态波（正弦 + 伪随机），
-  只是不随真实音量变化。JS 侧还要自己做快攻慢放平滑，壳不需要平滑。
+- `onNativeVoiceAmp(amp)`：壳原样传 `MediaRecorder.getMaxAmplitude()` 的 **0~32767 原始值**，
+  主线程每 **100ms** 回调一次；**不取对数、不 clamp、不格式化**。dB 归一化、快攻慢放平滑
+  全部由页面做（旧名 `onNativeVoiceLevel` 在页面里保留为别名，同样按 raw 解释）。
+  不实现也能用：页面会退化成拟态波（正弦 + 伪随机），只是不随真实音量变化。
 - `onNativeVoiceState('recording')`：**按住说话的时长判定依赖它**。页面用这个回调重置
   「60 秒上限」和「太短丢弃」的起点，避免首次授权弹窗的时间被算进录音。不实现也不会崩：
   页面按点击时刻计时，代价是首次授权那一次会被当成「太短」丢弃（用户再按一次即可）。
@@ -136,16 +135,10 @@ public final class VoiceBridge {
     private void tickLevel() {
         MediaRecorder r = recorder;
         if (state != State.RECORDING || r == null) return;
-        double v = 0;
-        try {
-            int amp = r.getMaxAmplitude();               // 0 ~ 32767
-            if (amp > 0) {
-                double db = 20 * Math.log10(amp / 32767.0);
-                v = Math.max(0, Math.min(1, (db + 55) / 50));
-            }
-        } catch (Exception ignored) { }
-        js("window.onNativeVoiceLevel && window.onNativeVoiceLevel("
-                + String.format(java.util.Locale.US, "%.3f", v) + ")");
+        int amp = 0;
+        try { amp = r.getMaxAmplitude(); } catch (Exception ignored) { }
+        // 原始幅度直接给页面，不做任何换算
+        js("window.onNativeVoiceAmp && window.onNativeVoiceAmp(" + amp + ")");
         main.postDelayed(levelTick, LEVEL_INTERVAL_MS);
     }
 

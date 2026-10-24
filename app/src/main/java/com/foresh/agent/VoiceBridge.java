@@ -19,13 +19,12 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.util.Locale;
 
 /**
  * 语音输入的原生录音桥，由 MainActivity 注入为 {@code window.AgentNative}。
  *
  * <p>契约见仓库根目录 {@code voice-input.md}：页面调用 startVoice / stopVoice / cancelVoice，
- * 壳通过 {@code window.onNativeVoiceState('recording')}、{@code window.onNativeVoiceLevel(level)}、
+ * 壳通过 {@code window.onNativeVoiceState('recording')}、{@code window.onNativeVoiceAmp(amp)}、
  * {@code window.onNativeVoiceResult(base64, mime)}、{@code window.onNativeVoiceError(code, message)}
  * 回调。
  *
@@ -226,26 +225,20 @@ public final class VoiceBridge {
     }
 
     /**
-     * 每 100ms 读一次峰值振幅（0~32767），换算成和浏览器端同口径的 dB 归一化电平
-     * （-55dB 以下视为静音，-5dB 以上封顶），交给页面画声波。
-     * 壳不做平滑，页面侧自己做快攻慢放。
+     * 每 100ms 读一次峰值振幅（0~32767）原样交给页面；换算、归一化、平滑全在页面侧做，
+     * 壳不做任何处理（不取对数、不 clamp、不格式化）。
      */
     private void tickLevel() {
         if (state != State.RECORDING || recorder == null) {
             return;
         }
-        double level = 0;
+        int amp = 0;
         try {
-            int amp = recorder.getMaxAmplitude(); // 距上次调用以来的峰值，0 表示还没采到
-            if (amp > 0) {
-                double db = 20 * Math.log10(amp / 32767.0);
-                level = Math.max(0, Math.min(1, (db + 55) / 50));
-            }
+            amp = recorder.getMaxAmplitude(); // 距上次调用以来的峰值，采不到时为 0
         } catch (Exception ignored) {
             // getMaxAmplitude 个别机型会抛，按静音处理
         }
-        js("window.onNativeVoiceLevel && window.onNativeVoiceLevel("
-                + String.format(Locale.US, "%.3f", level) + ")");
+        js("window.onNativeVoiceAmp && window.onNativeVoiceAmp(" + amp + ")");
         main.postDelayed(levelTick, LEVEL_INTERVAL_MS);
     }
 
