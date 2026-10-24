@@ -10,7 +10,6 @@ import android.os.Looper;
 import android.util.Base64;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
-import android.widget.Toast;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -217,9 +216,6 @@ public final class VoiceBridge {
             state = State.RECORDING;
             main.postDelayed(autoStop, MAX_RECORD_MS);
             main.postDelayed(levelTick, LEVEL_INTERVAL_MS);
-            // 页面在自己的 UI 上已经有「录音中」，这里再加一条原生提示：
-            // 脚本静默调桥时，用户至少看得见麦克风确实开了
-            Toast.makeText(activity, "正在录音…", Toast.LENGTH_SHORT).show();
             // 让页面的 60s 从「真的开始录」算，授权弹窗的时间不算
             js("window.onNativeVoiceState && window.onNativeVoiceState('recording')");
             return;
@@ -230,7 +226,8 @@ public final class VoiceBridge {
     }
 
     /**
-     * 每 100ms 读一次峰值振幅（0~32767），按 log10 映射到 0~1 交给页面画声波。
+     * 每 100ms 读一次峰值振幅（0~32767），换算成和浏览器端同口径的 dB 归一化电平
+     * （-55dB 以下视为静音，-5dB 以上封顶），交给页面画声波。
      * 壳不做平滑，页面侧自己做快攻慢放。
      */
     private void tickLevel() {
@@ -241,7 +238,8 @@ public final class VoiceBridge {
         try {
             int amp = recorder.getMaxAmplitude(); // 距上次调用以来的峰值，0 表示还没采到
             if (amp > 0) {
-                level = Math.log10(1 + amp) / Math.log10(32768);
+                double db = 20 * Math.log10(amp / 32767.0);
+                level = Math.max(0, Math.min(1, (db + 55) / 50));
             }
         } catch (Exception ignored) {
             // getMaxAmplitude 个别机型会抛，按静音处理

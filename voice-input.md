@@ -69,9 +69,10 @@ window.onNativeVoiceLevel(level)           // 建议实现：0~1 实时电平，
 ```
 
 - `onNativeVoiceLevel(level)`：`MediaRecorder.getMaxAmplitude()` 返回 0~32767，换算成
-  `level = log10(1 + amp) / log10(32768)`，主线程每 **100ms** 回调一次。不实现也能用：
-  页面会退化成拟态波（正弦 + 伪随机），只是不随真实音量变化。
-  JS 侧还要自己做快攻慢放平滑，壳不需要平滑。
+  `db = 20 * log10(amp / 32767)`，`level = clamp((db + 55) / 50, 0, 1)`
+  （-55dB 以下静音、-5dB 以上封顶，与浏览器端 `AnalyserNode` 的 dB 口径一致），
+  主线程每 **100ms** 回调一次。不实现也能用：页面会退化成拟态波（正弦 + 伪随机），
+  只是不随真实音量变化。JS 侧还要自己做快攻慢放平滑，壳不需要平滑。
 - `onNativeVoiceState('recording')`：**按住说话的时长判定依赖它**。页面用这个回调重置
   「60 秒上限」和「太短丢弃」的起点，避免首次授权弹窗的时间被算进录音。不实现也不会崩：
   页面按点击时刻计时，代价是首次授权那一次会被当成「太短」丢弃（用户再按一次即可）。
@@ -138,7 +139,10 @@ public final class VoiceBridge {
         double v = 0;
         try {
             int amp = r.getMaxAmplitude();               // 0 ~ 32767
-            if (amp > 0) v = Math.log10(1 + amp) / Math.log10(32768);
+            if (amp > 0) {
+                double db = 20 * Math.log10(amp / 32767.0);
+                v = Math.max(0, Math.min(1, (db + 55) / 50));
+            }
         } catch (Exception ignored) { }
         js("window.onNativeVoiceLevel && window.onNativeVoiceLevel("
                 + String.format(java.util.Locale.US, "%.3f", v) + ")");
@@ -229,7 +233,6 @@ public final class VoiceBridge {
                 main.postDelayed(levelTick, LEVEL_INTERVAL_MS);
                 // 让页面的 60s 从“真的开始录”算（授权弹窗的时间不算）
                 js("window.onNativeVoiceState && window.onNativeVoiceState('recording')");
-                // 建议再加一个原生提示（Toast「正在录音…」）：页面自己也可以被第三方脚本调用
                 return;
             } catch (Exception e) {
                 // 局部变量释放：失败时 recorder 字段还没赋值，releaseQuietly() 管不到它
