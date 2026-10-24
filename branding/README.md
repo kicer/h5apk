@@ -270,6 +270,7 @@ bash branding/ci-targets.sh
 
 - `app_name`、`status_bar` 两个资源由 `build.gradle` 的 `resValue` 注入，**不要**再在 `res/values/strings.xml` 里定义同名资源。
 - 权限：`INTERNET` + `RECORD_AUDIO`（语音输入）；`allowBackup=false`；组件 `exported` 最小化（仅 `MainActivity`）。
+- 首次启动页保存地址前会请求 `<origin>/api/health`（`ok===true` 且 `service==='agent-core'`）；网络/证书异常可手动跳过。
 - 不使用动态加载 / 热更新 / 插件化；`fixed_url`、IP、端口默认写在 `BuildConfig`，运行时只允许用户在设置页填一个 origin，不接受 Intent 传入的完整 URL。
 - 因为允许手填 `http://IP:端口`，`usesCleartextTraffic=true` + `base-config cleartextTrafficPermitted=true`（自用取舍）。
 - 换 `application_id` 或加 `customer` = 新应用（与旧包共存，数据不互通）。

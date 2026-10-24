@@ -80,6 +80,17 @@
             android:textSize="17sp" />
 
         <Button
+            android:id="@+id/server_bypass"
+            style="?attr/borderlessButtonStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#888888"
+            android:textSize="15sp"
+            android:text="仍然使用此地址（跳过检查）"
+            android:visibility="gone" />
+
+        <Button
             android:id="@+id/server_cancel"
             style="?attr/borderlessButtonStyle"
             android:layout_width="match_parent"

@@ -67,6 +67,14 @@ public final class ServerConfig {
         return origin != null ? origin.baseUrl() + "/" : BuildConfig.AGENT_FIXED_URL;
     }
 
+    /** 把地址收敛成 origin 后拼 {@code /api/health}（core 的路由是根绝对的）。 */
+    public static String healthUrl(String baseUrl) {
+        Origin origin = parse(baseUrl);
+        String base = origin != null ? origin.baseUrl()
+                : stripTrailingSlashes(baseUrl == null ? "" : baseUrl.trim());
+        return base + "/api/health";
+    }
+
     public static void saveOrigin(String normalizedOrigin) {
         SharedPreferences p = prefs();
         if (p == null) {
@@ -114,6 +122,17 @@ public final class ServerConfig {
      */
     public static String normalizeUserInput(String raw) {
         String input = raw == null ? "" : raw.trim();
+
+        // 容忍误粘贴的尾部：/、/api/health、/api（core 的 health 在根绝对路径上）
+        input = stripTrailingSlashes(input);
+        String lower = input.toLowerCase(Locale.ROOT);
+        if (lower.endsWith("/api/health")) {
+            input = input.substring(0, input.length() - "/api/health".length());
+        } else if (lower.endsWith("/api")) {
+            input = input.substring(0, input.length() - "/api".length());
+        }
+        input = stripTrailingSlashes(input);
+
         if (input.isEmpty()) {
             return null;
         }
@@ -171,6 +190,14 @@ public final class ServerConfig {
     private static SharedPreferences prefs() {
         return appContext == null ? null
                 : appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    }
+
+    private static String stripTrailingSlashes(String value) {
+        int end = value.length();
+        while (end > 0 && value.charAt(end - 1) == '/') {
+            end--;
+        }
+        return value.substring(0, end);
     }
 
     private static void refresh() {
