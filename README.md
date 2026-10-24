@@ -193,11 +193,24 @@ cat ~/.ssh/deploy_h5apk
 | 地址白名单 | 所有加载/跳转/重定向/下载/上传/子资源都过 `UrlPolicy`，只放行编译期写死的地址 |
 | 深链 | 只支持 `agent://open?page=home` 这类枚举页，**禁止**外部传入完整 URL |
 | 明文流量 | `usesCleartextTraffic=false` + `network_security_config` 仅对 `http_host` 开放明文 |
-| WebView | 关文件访问、关第三方 Cookie、关自动播放、混合内容 `NEVER_ALLOW`、不使用 JS 桥 |
-| 权限 | 只有 `INTERNET`；`allowBackup=false`；`exported` 最小化 |
+| WebView | 关文件访问、关第三方 Cookie、关自动播放、混合内容 `NEVER_ALLOW`；JS 桥仅暴露语音录音（`VoiceBridge`，3 个无参方法，无文件/存储读写能力） |
+| 权限 | `INTERNET` + `RECORD_AUDIO`（语音输入）；`allowBackup=false`；`exported` 最小化 |
 | 混淆 | release 开启 `minifyEnabled` + `shrinkResources`，V1/V2/V3 签名 |
 
 详见 `branding/README.md`。
+
+---
+
+## 语音输入（录音桥）
+
+页面通过 `window.AgentNative`（由 `VoiceBridge` 注入）录音，结束后以 base64 回传，
+由页面 `POST /api/asr/transcribe` 转成文字。完整契约见 `voice-input.md`。
+
+- 首次点击申请 `RECORD_AUDIO`，授权后自动开始录音；拒绝则提示「需要麦克风权限」。
+- 只有「白名单页面 + App 在前台」才真正开录（防第三方 CDN 脚本静默取麦），单实例状态机防连点。
+- 切后台 / 换页会取消录音并回报 `cancelled`；不做前台服务（短交互不值得常驻通知）。
+- 单次上限 60 秒（页面 + 壳各兜一道），16kHz 单声道 AAC，约 240KB。
+- 服务端没接 ASR（`GET /api/asr/status` 返回 `enabled:false`）时页面不显示录音按钮，壳不受影响。
 
 ---
 
@@ -213,3 +226,5 @@ cat ~/.ssh/deploy_h5apk
 | 本地构建卡在下载 Gradle | `gradle/wrapper/gradle-wrapper.properties` 里是腾讯镜像，本机已缓存；不要随意改成 `-bin`（本机可能下不完整） |
 | 页面外部 CDN 图片挂掉 | `block_external_subresources=true` 所致，需要就改 `false` |
 | 页面链接点了没反应 | `open_external_links=false` 会拦截外链 |
+| 点麦克风提示「需要麦克风权限」 | 之前拒绝过权限；到系统设置 → 应用 → 权限里打开麦克风（「不再询问」不会再弹窗） |
+| 页面没有麦克风按钮 | 服务端 `GET /api/asr/status` 返回 `enabled:false`（`ASR_URL` 未配置），或页面既无桥又非 HTTPS |

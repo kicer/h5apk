@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 只保留联网权限：下载通知由系统 DownloadManager 发出，无需 POST_NOTIFICATIONS -->
+    <!-- 只保留联网 + 麦克风：下载通知由系统 DownloadManager 发出，无需 POST_NOTIFICATIONS -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 语音输入（window.AgentNative 录音桥）；仅本 App 前台、白名单页面可开录 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:allowBackup="false"

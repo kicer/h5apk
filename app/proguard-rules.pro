@@ -15,7 +15,7 @@
     public static *** v(...);
 }
 
-# 本项目未使用 addJavascriptInterface，若后续新增再按需 keep：
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# WebView JS 桥（VoiceBridge）：@JavascriptInterface 方法名不能被混淆，否则页面调不到
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}

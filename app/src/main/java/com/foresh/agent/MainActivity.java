@@ -67,6 +67,9 @@ public class MainActivity extends AppCompatActivity {
     private ValueCallback<Uri[]> filePathCallback;
     private static final int FILE_CHOOSER_RESULT_CODE = 100;
 
+    // ===== 语音录音桥 =====
+    private VoiceBridge voiceBridge;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -153,7 +156,11 @@ public class MainActivity extends AppCompatActivity {
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, false);
 
-        // 不使用 addJavascriptInterface（无 JS 桥）
+        // JS 桥只暴露语音录音（3 个无参方法，无文件/存储读取能力），契约见 voice-input.md
+        voiceBridge = new VoiceBridge(this, webView);
+        // 必须在 loadUrl 之前注册，否则首屏页面拿不到 window.AgentNative
+        webView.addJavascriptInterface(voiceBridge, "AgentNative");
+
         webView.setWebViewClient(new CustomWebViewClient());
 
         // 文件上传：只有白名单页面才允许唤起系统选择器
@@ -232,6 +239,15 @@ public class MainActivity extends AppCompatActivity {
             }
             filePathCallback.onReceiveValue(results);
             filePathCallback = null;
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                          int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (voiceBridge != null) {
+            voiceBridge.onRequestPermissionsResult(requestCode, grantResults);
         }
     }
 
@@ -371,6 +387,10 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
             super.onPageStarted(view, url, favicon);
+            // 换页/重载：录音结果不能打到新页面上，进行中的录音直接取消
+            if (voiceBridge != null) {
+                voiceBridge.onPageChanged();
+            }
             loadingText.setText("正在加载: " + getDomainFromUrl(url));
         }
 
@@ -527,12 +547,19 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onPause() {
+        // 切后台取消录音：Android 9+ 后台取不到麦克风，录出来也是静音/半截
+        if (voiceBridge != null) {
+            voiceBridge.onPause();
+        }
         flushCookies();
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
+        if (voiceBridge != null) {
+            voiceBridge.onDestroy();
+        }
         if (filePathCallback != null) {
             filePathCallback.onReceiveValue(null);
             filePathCallback = null;
