@@ -226,14 +226,16 @@ cat ~/.ssh/deploy_h5apk
 
 ## 语音输入（录音桥）
 
-页面通过 `window.AgentNative`（由 `VoiceBridge` 注入）录音，结束后以 base64 回传，
-由页面 `POST /api/asr/transcribe` 转成文字。完整契约见 `voice-input.md`。
+页面通过 `window.AgentNative`（由 `VoiceBridge` 注入）按住录音：壳用 `AudioRecord` 以
+16kHz / 单声道 / 16bit 采集，每约 100ms 通过 `onNativeVoiceChunk(base64Pcm, 16000)` 推一片
+裸 PCM；页面按停顿切段并逐段 `POST /api/asr/transcribe`。`stopVoice()` 只停采集，不再回传整段音频。
+完整契约见 `voice-input.md`。
 
 - 首次点击申请 `RECORD_AUDIO`，授权后自动开始录音；拒绝则提示「需要麦克风权限」。
 - 只有「白名单页面 + App 在前台」才真正开录（防第三方 CDN 脚本静默取麦），单实例状态机防连点。
 - 切后台 / 换页会取消录音并回报 `cancelled`；不做前台服务（短交互不值得常驻通知）。
-- 单次上限 60 秒（页面 + 壳各兜一道），16kHz 单声道 AAC，约 240KB。
-- 录音中每 100ms 通过 `onNativeVoiceAmp(0~32767)` 上报 `getMaxAmplitude()` 原始值，页面自己换算成 dB 并画声波（不实现则退化为拟态波）。
+- 单次上限 180 秒（页面 + 壳各兜一道）；16kHz 单声道裸 PCM，每秒约 32KB、Base64 后约 43KB。
+- 声波由页面用每片 PCM 的峰值计算；壳不做静音判定、切段或音量计算。
 - 服务端没接 ASR（`GET /api/asr/status` 返回 `enabled:false`）时页面不显示录音按钮，壳不受影响。
 
 ---

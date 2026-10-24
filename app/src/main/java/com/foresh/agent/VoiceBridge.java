@@ -3,8 +3,9 @@ package com.foresh.agent;
 import android.Manifest;
 import android.app.Activity;
 import android.content.pm.PackageManager;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
 import android.media.MediaRecorder;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
@@ -16,21 +17,19 @@ import androidx.core.content.ContextCompat;
 
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-
 /**
  * 语音输入的原生录音桥，由 MainActivity 注入为 {@code window.AgentNative}。
  *
- * <p>契约见仓库根目录 {@code voice-input.md}：页面调用 startVoice / stopVoice / cancelVoice，
- * 壳通过 {@code window.onNativeVoiceState('recording')}、{@code window.onNativeVoiceAmp(amp)}、
- * {@code window.onNativeVoiceResult(base64, mime)}、{@code window.onNativeVoiceError(code, message)}
- * 回调。
+ * <p>契约见仓库根目录 {@code voice-input.md}：页面调用 startVoice / stopVoice / cancelVoice；
+ * 壳用 {@link AudioRecord} 固定 16kHz / 单声道 / 16bit 采集，每约 100ms 通过
+ * {@code window.onNativeVoiceChunk(base64Pcm, 16000)} 推一片裸 PCM；
+ * 真正开始录音时回调 {@code window.onNativeVoiceState('recording')}，
+ * 出错时回调 {@code window.onNativeVoiceError(code, message)}。
  *
  * <p>线程：三个 {@link JavascriptInterface} 入口跑在 WebView 的 JavaBridge 子线程，
- * MediaRecorder 的所有操作都收敛到主线程；只有读临时文件 + Base64 编码放在子线程。
- * 状态字段只在主线程读写。
+ * 统一 post 到主线程；AudioRecord 的 read() 在独立采集线程里阻塞执行。
+ * 主线程只调用 stop() 打断阻塞中的 read()，release() 只在采集线程的 finally 里执行，
+ * 避免跨线程操作同一个 AudioRecord。状态字段只在主线程读写。
  *
  * <p>安全：第三方脚本与页面同源，同样能调这个桥，所以真正开录前要过
  * {@link UrlPolicy} 白名单 + App 在前台；单实例状态机保证不会叠加录音。
@@ -38,27 +37,30 @@ import java.io.FileInputStream;
 public final class VoiceBridge {
 
     private static final int REQ_MIC = 1001;
-    private static final long MAX_RECORD_MS = 60_000L;
-    private static final String MIME = "audio/mp4";
 
-    private enum State { IDLE, WAITING_PERMISSION, RECORDING, ENCODING }
+    // 契约固定：16kHz / 单声道 / 16bit 小端裸 PCM
+    private static final int RATE = 16000;
+    private static final int CHUNK_MS = 100;
+    private static final int SAMPLES_PER_CHUNK = RATE * CHUNK_MS / 1000; // 1600
+    private static final int CHUNK_BYTES = SAMPLES_PER_CHUNK * 2;         // 3200
+
+    // 页面自己会在 180s 主动 stopVoice()，这里只是兜底
+    private static final long MAX_RECORD_MS = 180_000L;
+
+    private enum State { IDLE, WAITING_PERMISSION, RECORDING }
 
     private final Activity activity;
     private final WebView webView;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable autoStop = this::stopOnMain;
 
-    // 实时电平：每 100ms 读一次 getMaxAmplitude()，交给页面画声波
-    private static final long LEVEL_INTERVAL_MS = 100L;
-    private final Runnable levelTick = this::tickLevel;
-
     private State state = State.IDLE;
-    private MediaRecorder recorder;
-    private File file;
-    // 每次录音递增；取消后旧编码线程的结果直接丢弃，不会回传到新会话
-    private int session;
-    private boolean destroyed;
-    // 授权弹窗期间用户已经松手（stopVoice 早于权限结果）：授权后不要再凭空开录
+    private AudioRecord record;
+    private Thread worker;
+    private volatile boolean running;
+    private volatile boolean destroyed;
+
+    // 授权弹窗期间用户已经松手：授权回来后不要凭空开一段没人停的录音
     private boolean stopWhileWaiting;
 
     public VoiceBridge(Activity activity, WebView webView) {
@@ -70,46 +72,51 @@ public final class VoiceBridge {
 
     @JavascriptInterface
     public void startVoice() {
-        main.post(this::startOnMain);
+        runOnMain(this::startOnMain);
     }
 
+    /** 结束录音：只停采集，不再编码/回传；已发出的分片由页面自己等结果。 */
     @JavascriptInterface
     public void stopVoice() {
-        main.post(this::stopOnMain);
+        runOnMain(this::stopOnMain);
     }
 
     /** 页面主动放弃：页面自己已复位，壳不回任何回调。 */
     @JavascriptInterface
     public void cancelVoice() {
-        main.post(() -> cancelOnMain(false));
+        runOnMain(() -> cancelOnMain(false));
     }
 
     // ===== 生命周期：由 Activity / WebViewClient 调用 =====
 
     /**
-     * 切后台：只打断真正在录/在编码的会话。
+     * 切后台：只打断真正在录的会话。
      * 授权弹窗期间部分 ROM 也会走 onPause，那里不能取消，否则首次授权的两段式流程会断。
      */
     public void onPause() {
-        main.post(() -> {
-            if (state == State.RECORDING || state == State.ENCODING) {
+        runOnMain(() -> {
+            if (state == State.RECORDING) {
                 cancelOnMain(true);
             }
         });
     }
 
-    /** 换页：base64 不能打到新页面的回调上，必须取消；页面还在等结果所以要回报。 */
+    /** 换页/重载：分片不能打到新页面上，进行中的录音必须取消。 */
     public void onPageChanged() {
-        main.post(() -> {
-            if (state == State.RECORDING || state == State.ENCODING) {
+        runOnMain(() -> {
+            if (state == State.RECORDING) {
                 cancelOnMain(true);
+            } else if (state == State.WAITING_PERMISSION) {
+                // 页面已经换了，授权回来也不该在新页面上凭空开录
+                stopWhileWaiting = false;
+                state = State.IDLE;
             }
         });
     }
 
     /** Activity 销毁：静默清理，页面已经不在了，不需要回报。 */
     public void onDestroy() {
-        main.post(() -> {
+        runOnMain(() -> {
             destroyed = true;
             cancelOnMain(false);
         });
@@ -119,7 +126,7 @@ public final class VoiceBridge {
         if (requestCode != REQ_MIC) {
             return;
         }
-        main.post(() -> {
+        runOnMain(() -> {
             if (state != State.WAITING_PERMISSION) {
                 return;
             }
@@ -133,10 +140,9 @@ public final class VoiceBridge {
                 fail("no_permission", "需要麦克风权限");
                 return;
             }
-            if (stopRequested) {
+            if (stopRequested || destroyed) {
                 // 按住说话时用户得松手去点「允许」，这段录音已经不存在了，
                 // 绝不能授权后凭空开一段没人停的麦
-                fail("too_short", "说话时间太短，请按住再说");
                 return;
             }
             // 还在按住（或手指又落下来）：授权后直接开录，不要求用户再点一次
@@ -166,80 +172,140 @@ public final class VoiceBridge {
         beginRecording();
     }
 
-    /**
-     * 依次尝试：VOICE_RECOGNITION(16k) → MIC(16k) → MIC(设备默认参数)。
-     * 前两种关掉 AGC/降噪、体积小、对 ASR 友好；个别机型不支持 16k 时退到默认参数，
-     * 由服务端 ffmpeg 归一化。
-     */
-    @SuppressWarnings("deprecation")
     private void beginRecording() {
-        for (int attempt = 0; attempt < 3; attempt++) {
-            boolean deviceDefault = attempt == 2;
-            int source = attempt == 0
-                    ? MediaRecorder.AudioSource.VOICE_RECOGNITION
-                    : MediaRecorder.AudioSource.MIC;
-
-            File f = null;
-            MediaRecorder r = null;
-            try {
-                f = File.createTempFile("voice", ".m4a", activity.getCacheDir());
-                // 无参构造在 API 31 起废弃
-                r = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-                        ? new MediaRecorder(activity)
-                        : new MediaRecorder();
-                r.setAudioSource(source);
-                r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-                r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-                if (!deviceDefault) {
-                    r.setAudioSamplingRate(16000);
-                    r.setAudioEncodingBitRate(32000);
-                    r.setAudioChannels(1);
-                }
-                r.setOutputFile(f.getAbsolutePath());
-                r.prepare();
-                r.start();
-            } catch (Exception e) {
-                if (r != null) {
-                    try {
-                        r.release();
-                    } catch (Exception ignored) {
-                    }
-                }
-                delete(f);
-                continue;
-            }
-
-            recorder = r;
-            file = f;
-            session++;
-            state = State.RECORDING;
-            main.postDelayed(autoStop, MAX_RECORD_MS);
-            main.postDelayed(levelTick, LEVEL_INTERVAL_MS);
-            // 让页面的 60s 从「真的开始录」算，授权弹窗的时间不算
-            js("window.onNativeVoiceState && window.onNativeVoiceState('recording')");
+        if (destroyed) {
+            state = State.IDLE;
             return;
         }
 
-        state = State.IDLE;
-        fail("start_failed", "无法开始录音");
+        int minBuf = AudioRecord.getMinBufferSize(
+                RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        if (minBuf <= 0) {
+            // 个别设备不支持 16k：契约要求页面按 16k 估算时长与切段，
+            // 不能直接推 44.1k，因此这里直接失败（而不是偷偷改采样率）
+            state = State.IDLE;
+            fail("start_failed", "设备不支持 16kHz 录音");
+            return;
+        }
+
+        // VOICE_RECOGNITION 关掉 AGC/降噪，对 ASR 更友好；个别机型不支持则回退 MIC
+        final AudioRecord r = createRecord(minBuf);
+        if (r == null) {
+            state = State.IDLE;
+            fail("start_failed", "无法开始录音");
+            return;
+        }
+
+        record = r;
+        running = true;
+        state = State.RECORDING;
+        main.postDelayed(autoStop, MAX_RECORD_MS);
+
+        worker = new Thread(() -> captureLoop(r), "voice-capture");
+        worker.start();
+    }
+
+    private AudioRecord createRecord(int minBuf) {
+        // 至少留 4 个分片的余量，避免 read() 因缓冲过小频繁返回
+        int bufferBytes = Math.max(minBuf * 2, CHUNK_BYTES * 4);
+        int[] sources = {
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.MIC
+        };
+        for (int source : sources) {
+            AudioRecord candidate = null;
+            try {
+                candidate = new AudioRecord(source, RATE, AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT, bufferBytes);
+                if (candidate.getState() == AudioRecord.STATE_INITIALIZED) {
+                    return candidate;
+                }
+            } catch (Exception ignored) {
+                // 换下一个 source
+            }
+            if (candidate != null) {
+                try {
+                    candidate.release();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return null;
     }
 
     /**
-     * 每 100ms 读一次峰值振幅（0~32767）原样交给页面；换算、归一化、平滑全在页面侧做，
-     * 壳不做任何处理（不取对数、不 clamp、不格式化）。
+     * 采集线程：阻塞 read → 小端字节 → Base64 → 推给页面。
+     * 壳不判静音、不切段、不算音量；这些规则只存在页面侧。
      */
-    private void tickLevel() {
-        if (state != State.RECORDING || recorder == null) {
+    private void captureLoop(AudioRecord r) {
+        boolean started = false;
+        try {
+            if (!running) {
+                return;
+            }
+            r.startRecording();
+            if (!running) {
+                return; // stop() 已抢先，直接走 finally 释放
+            }
+            if (r.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+                throw new IllegalStateException("AudioRecord 未进入录音状态");
+            }
+            started = true;
+
+            // 让页面的 180s 从「真的开始录」算（授权弹窗的时间不算）
+            js("window.onNativeVoiceState && window.onNativeVoiceState('recording')");
+
+            short[] pcm = new short[SAMPLES_PER_CHUNK];
+            byte[] bytes = new byte[CHUNK_BYTES];
+            while (running) {
+                int n = r.read(pcm, 0, pcm.length);
+                if (n <= 0) {
+                    if (!running) {
+                        break; // 主线程 stop() 打断了阻塞中的 read()
+                    }
+                    throw new IllegalStateException("AudioRecord.read=" + n);
+                }
+                for (int i = 0; i < n; i++) {
+                    bytes[i * 2] = (byte) (pcm[i] & 0xff);
+                    bytes[i * 2 + 1] = (byte) ((pcm[i] >> 8) & 0xff);
+                }
+                String b64 = Base64.encodeToString(bytes, 0, n * 2, Base64.NO_WRAP);
+                // JSONObject.quote 统一转义；Base64 本身安全，这里只是统一规矩
+                js("window.onNativeVoiceChunk(" + JSONObject.quote(b64) + "," + RATE + ")");
+            }
+        } catch (Exception e) {
+            if (running) {
+                running = false;
+                final String code = started ? "read_failed" : "start_failed";
+                final String detail = e.getMessage() == null
+                        ? e.getClass().getSimpleName()
+                        : e.getMessage();
+                final String message = (started ? "录音中断：" : "无法开始录音：") + detail;
+                main.post(() -> failCapture(r, code, message));
+            }
+        } finally {
+            running = false;
+            // 采集线程是唯一 release() 的地方；主线程的 stop() 只负责打断 read()
+            try {
+                r.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                r.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** 采集线程异常后的收尾；已被 stop/cancel 接管时不再重复报错。 */
+    private void failCapture(AudioRecord r, String code, String message) {
+        if (destroyed || record != r) {
             return;
         }
-        int amp = 0;
-        try {
-            amp = recorder.getMaxAmplitude(); // 距上次调用以来的峰值，采不到时为 0
-        } catch (Exception ignored) {
-            // getMaxAmplitude 个别机型会抛，按静音处理
-        }
-        js("window.onNativeVoiceAmp && window.onNativeVoiceAmp(" + amp + ")");
-        main.postDelayed(levelTick, LEVEL_INTERVAL_MS);
+        main.removeCallbacks(autoStop);
+        record = null;
+        state = State.IDLE;
+        fail(code, message);
     }
 
     private void stopOnMain() {
@@ -253,95 +319,43 @@ public final class VoiceBridge {
             return;
         }
         main.removeCallbacks(autoStop);
-        main.removeCallbacks(levelTick);
-        state = State.ENCODING;
-
-        final int mySession = session;
-        MediaRecorder r = recorder;
-        File f = file;
-        recorder = null;
-        file = null;
-
-        boolean stopped = r != null;
-        if (r != null) {
-            try {
-                r.stop(); // 录音过短（< ~1s）会抛 RuntimeException，按「没录到」处理
-            } catch (RuntimeException e) {
-                stopped = false;
-            }
-            try {
-                r.release();
-            } catch (Exception ignored) {
-            }
-        }
-
-        if (!stopped || f == null) {
-            delete(f);
-            state = State.IDLE;
-            fail("too_short", "说话时间太短，请按住再说");
-            return;
-        }
-
-        new Thread(() -> {
-            byte[] bytes;
-            try {
-                bytes = readAll(f);
-            } catch (Exception e) {
-                delete(f);
-                main.post(() -> {
-                    if (mySession != session) {
-                        return; // 编码期间已被取消，结果作废
-                    }
-                    state = State.IDLE;
-                    fail("read_failed", "读取录音失败");
-                });
-                return;
-            }
-            delete(f);
-            final String b64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
-            main.post(() -> {
-                if (mySession != session) {
-                    return; // 编码期间已被取消，结果作废
-                }
-                state = State.IDLE;
-                js("window.onNativeVoiceResult(" + JSONObject.quote(b64)
-                        + "," + JSONObject.quote(MIME) + ")");
-            });
-        }, "voice-encode").start();
+        stopCapture();
+        state = State.IDLE;
+        // 注意：这里不再回传音频，识别分段已经在录音过程中发完了
     }
 
     /**
-     * @param notify true = 页面还在等结果（切后台 / 换页），必须回 cancelled 让按钮复位；
+     * @param notify true = 页面还在等收尾（切后台 / 换页），回 cancelled 让页面立刻收遮罩；
      *               页面主动 cancelVoice 和 onDestroy 都传 false。
      */
     private void cancelOnMain(boolean notify) {
         main.removeCallbacks(autoStop);
-        main.removeCallbacks(levelTick);
-        boolean pageWaiting = state == State.RECORDING || state == State.ENCODING;
-        session++; // 让正在编码的旧结果作废
+        boolean wasRecording = state == State.RECORDING;
         stopWhileWaiting = false;
-        releaseQuietly();
-        delete(file);
-        file = null;
+        stopCapture();
         state = State.IDLE;
-        if (notify && pageWaiting) {
+        if (notify && wasRecording && !destroyed) {
             fail("cancelled", "");
         }
     }
 
-    private void releaseQuietly() {
-        if (recorder == null) {
-            return;
+    private void stopCapture() {
+        running = false;
+        AudioRecord r = record;
+        record = null;
+        if (r != null) {
+            // 打断阻塞中的 read()；stop/release 由采集线程的 finally 完成，
+            // 避免跨线程操作同一个 AudioRecord
+            try {
+                r.stop();
+            } catch (Exception ignored) {
+            }
         }
-        try {
-            recorder.stop();
-        } catch (Exception ignored) {
+        Thread w = worker;
+        worker = null;
+        if (w != null) {
+            w.interrupt();
         }
-        try {
-            recorder.release();
-        } catch (Exception ignored) {
-        }
-        recorder = null;
     }
 
     private void fail(String code, String message) {
@@ -349,7 +363,15 @@ public final class VoiceBridge {
                 + "," + JSONObject.quote(message) + ")");
     }
 
-    /** 主线程调用；WebView 销毁后静默丢弃。 */
+    private void runOnMain(Runnable action) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action.run();
+        } else {
+            main.post(action);
+        }
+    }
+
+    /** 任意线程调用；WebView 销毁后静默丢弃。 */
     private void js(String script) {
         if (destroyed) {
             return;
@@ -364,23 +386,5 @@ public final class VoiceBridge {
                 // WebView 已销毁：丢弃回调
             }
         });
-    }
-
-    private static byte[] readAll(File f) throws Exception {
-        try (FileInputStream in = new FileInputStream(f);
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                out.write(buf, 0, n);
-            }
-            return out.toByteArray();
-        }
-    }
-
-    private static void delete(File f) {
-        if (f != null) {
-            f.delete();
-        }
     }
 }

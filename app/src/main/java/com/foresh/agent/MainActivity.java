@@ -418,7 +418,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
             super.onPageStarted(view, url, favicon);
-            // 换页/重载：录音结果不能打到新页面上，进行中的录音直接取消
+            // 换页/重载：PCM 分片不能打到新页面上，进行中的录音直接取消
             if (voiceBridge != null) {
                 voiceBridge.onPageChanged();
             }
