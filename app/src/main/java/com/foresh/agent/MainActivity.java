@@ -29,7 +29,10 @@ import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
 import java.io.ByteArrayInputStream;
@@ -72,6 +75,15 @@ public class MainActivity extends AppCompatActivity {
 
     // ===== 语音录音桥 =====
     private VoiceBridge voiceBridge;
+
+    // ===== 安全区 / 键盘高度注入（契约见 safe-area.md）=====
+    // 存的是 CSS 像素 × 10 的整数，避免浮点比较误差；-1 表示还没收到过 insets
+    private int lastSatTenths = -1;
+    private int lastSabTenths = -1;
+    private int lastSalTenths = -1;
+    private int lastSarTenths = -1;
+    private int lastKbTenths = -1;
+    private final Runnable safeAreaInjectRunnable = this::injectSafeAreaVars;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -233,6 +245,84 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "下载失败", Toast.LENGTH_SHORT).show();
             }
         });
+
+        // 真机调试：debug 包允许 chrome://inspect 连入，release 包不开
+        if (BuildConfig.DEBUG) {
+            WebView.setWebContentsDebuggingEnabled(true);
+        }
+
+        setupSafeAreaInsets();
+    }
+
+    /**
+     * 把系统栏 / 刘海 / 键盘占用的高度以 CSS 变量注入页面（契约见 safe-area.md）：
+     * --sat 顶部、--sab 底部、--sal/--sar 左右、--kb-native 键盘高度，单位都是 CSS px。
+     *
+     * <p>为什么不用 env(safe-area-inset-*)：Android WebView 不会把窗口 insets 传给 CSS，
+     * env() 基本恒为 0，只能由壳注入。
+     *
+     * <p>insets 是物理像素，CSS px = 物理像素 / density，必须换算。
+     * 另外 ViewGroup 分发 insets 时已按子 View 位置扣减过：非 edge-to-edge 时
+     * （系统已把 WebView 挪到状态栏下方）这里拿到的 top 就是 0，不会重复留白，
+     * 所以同一套代码在旧系统上不会有副作用。
+     */
+    private void setupSafeAreaInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(webView, (v, insets) -> {
+            Insets bars = insets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+            int ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            applySafeArea(bars, ime);
+            return insets; // 不消费，交给子 View 继续处理
+        });
+        ViewCompat.requestApplyInsets(webView);
+    }
+
+    private void applySafeArea(Insets bars, int imePx) {
+        float density = getResources().getDisplayMetrics().density;
+        if (density <= 0f) {
+            density = 1f;
+        }
+        int sat = toTenths(bars.top, density);
+        int sab = toTenths(bars.bottom, density);
+        int sal = toTenths(bars.left, density);
+        int sar = toTenths(bars.right, density);
+        int kb = toTenths(imePx, density);
+        if (sat == lastSatTenths && sab == lastSabTenths && sal == lastSalTenths
+                && sar == lastSarTenths && kb == lastKbTenths) {
+            return;
+        }
+        lastSatTenths = sat;
+        lastSabTenths = sab;
+        lastSalTenths = sal;
+        lastSarTenths = sar;
+        lastKbTenths = kb;
+        // 键盘动画期间 insets 会逐帧变化，合并到下一帧再注入，避免每帧一次 JS 调用
+        webView.removeCallbacks(safeAreaInjectRunnable);
+        webView.postDelayed(safeAreaInjectRunnable, 16);
+    }
+
+    private static int toTenths(int px, float density) {
+        return Math.round(px / density * 10f);
+    }
+
+    /** 把缓存的数值写进当前文档；换页后新文档没有这些变量，需要重新调用。 */
+    private void injectSafeAreaVars() {
+        if (lastSatTenths < 0) {
+            return; // 还没收到过 insets，别用 0 覆盖页面的默认值
+        }
+        String js = "var e=document.documentElement;if(e){"
+                + "e.style.setProperty('--sat','" + cssPx(lastSatTenths) + "px');"
+                + "e.style.setProperty('--sab','" + cssPx(lastSabTenths) + "px');"
+                + "e.style.setProperty('--sal','" + cssPx(lastSalTenths) + "px');"
+                + "e.style.setProperty('--sar','" + cssPx(lastSarTenths) + "px');"
+                + "e.style.setProperty('--kb-native','" + cssPx(lastKbTenths) + "px');"
+                + "}";
+        webView.evaluateJavascript(js, null);
+    }
+
+    /** 十分位整数 → "12" / "12.5"（String.valueOf(double) 固定用 '.'，不受 locale 影响）。 */
+    private static String cssPx(int tenths) {
+        return tenths % 10 == 0 ? String.valueOf(tenths / 10) : String.valueOf(tenths / 10.0);
     }
 
     @Override
@@ -426,10 +516,17 @@ public class MainActivity extends AppCompatActivity {
         }
 
         @Override
+        public void onPageCommitVisible(WebView view, String url) {
+            // 新文档已可绘制：尽早补上 CSS 变量，减少顶部/底部瞬间错位的闪动
+            injectSafeAreaVars();
+        }
+
+        @Override
         public void onPageFinished(WebView view, String url) {
             super.onPageFinished(view, url);
             flushCookies();
             showContent();
+            injectSafeAreaVars();
         }
 
         // ===== 导航/重定向白名单 =====
