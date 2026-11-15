@@ -19,7 +19,7 @@
 3. 执行：
 
 ```bash
-./branding/build.sh customerA         # 出一客户的包：推代码 + 触发 CI + 打印下载地址（本地不用 JDK）
+./branding/build.sh v2.2.0            # 发版：推代码 + 打版本 tag 触发 CI + 打印下载地址（本地不用 JDK）
 
 ./branding/build.sh                   # 只打 debug 包（debug 调试签名，可直接安装）
 ./branding/build.sh release           # 只打 release 包（配了 keystore.properties 则自动签名）
@@ -101,9 +101,9 @@ fallback_url=http://192.168.1.100:8080   # 域名连不上时自动走 IP:8080
 ./branding/build.sh release --upload
 ```
 
-- 远程文件名取自 `branding.properties` 的 `customer`，即 `agent-<customer>.apk`（例：`customer=zcwx` → `agent-zcwx.apk`）。
+- 远程文件名固定为 `agent.apk`。
 - 默认目标：`root@foresh:/root/workspace/webserver/website/www/html/apk/`。
-- 上传成功后会打印下载地址：`https://file.foresh.com/apk/agent-<customer>.apk`（例：`https://file.foresh.com/apk/agent-zcwx.apk`）。
+- 上传成功后会打印下载地址：`https://files.foresh.com/apk/agent.apk`。
 - 可用环境变量覆盖，不需要改脚本：
 
 ```bash
@@ -159,109 +159,39 @@ Settings → Secrets and variables → Actions → **Variables**。需要覆盖�
 
 命名规则：`BRAND_` + 配置项名大写（非字母数字转 `_`）。未配置的 Variable 会展开成空串，已被视为“未设置”自动回退，不会把 `branding.properties` 的值冲掉。
 
-> 图标不是文本配置项，无法用 Variable 传文件。多客户时把各自的 `png` 放进 `branding/icon/`，按以下顺序自动选择：
-> 1. `branding/icon/<customer>.png`（例：`branding/icon/zcwx.png`）
-> 2. `branding/icon/ic_launcher.png`（通用）
-> 3. `branding/icon/default/ic_launcher.png`（兜底）
->
-> 这样 CI 里只改 `BRAND_CUSTOMER` 就会自动换成对应图标。
+> 图标不是文本配置项，无法用 Variable 传文件。换图标直接替换 `branding/icon/ic_launcher.png`（正方形 png），
+> 删掉则回退到 `branding/icon/default/ic_launcher.png`。
 
-### 2.1 每个客户一套配置
-
-每个客户可以有自己的一份配置文件，覆盖 `fixed_url` / `app_name` / 域名 等任意项：
+### 3. 出包
 
 ```bash
-cp branding/customers/_template.properties branding/customers/customerA.properties
-# 只写需要覆盖的项，其余继承 branding.properties
+./branding/build.sh v2.2.0     # 提交推送 + 推版本 tag，CI 打单包并打印下载地址
 ```
 
-```properties
-# branding/customers/customerA.properties
-app_name=客户A
-http_host=10.0.0.5
-http_port=8091
-fixed_url=http://10.0.0.5:8091
-```
-
-- 文件名就是客户代号（`customerA.properties` → `customer` 为 `customerA`）。
-- 文件名以 `_` 开头的不会被打包，所以 `_template.properties` 可以放心放在这。
-- 包名仍为 `application_id + "." + customer`（例：`com.foresh.agent.customerA`）。
-- 客户只需存在**图标**或**配置文件**任一，就会被列入构建目标。
-
-### 3. 出包方式（三种）
-
-**A. 一条命令出某个客户（日常用，推荐）**
-
-```bash
-./branding/build.sh customerA
-```
-
-它会：提交推送当前改动 → 推一个名为 `customerA` 的 tag → GitHub 收到 tag 事件识别出「这是 customerA」，只编译这一个 → 立刻打印下载地址（此时通常还没编译完）：
-
-```
-🚀 触发 CI 构建：customerA
-🔗 下载地址（编译完成后可用）:
-   https://github.com/kicer/h5apk/releases/download/customerA/agent-customerA.apk
-```
-
-> 原理就是推 tag，所以本地**只需要 git**，不需要 JDK/Android SDK、也不需要额外工具。
-> tag 会被强推到当前提交（同名 tag 每次滚动），GitHub 据此只编译指定客户。
-> 若改动未提交且 tag 已指向当前提交，推送不会产生事件，脚本会提醒你去 Actions 页 Re-run。
-
-**B. 网页手动 Run workflow**
-
-Actions → `Build Android APK` → Run workflow：
-
-- `customer` **留空 = 单包**（`com.foresh.agent`，产物 `agent.apk`）
-- 填 `all` = 全部客户（每个客户各一个包）
-- 填客户代号 = 只打这一个（历史换皮用法）
-
-**C. 推版本 tag = 单包**
-
-```bash
-git tag v2.2.0 && git push origin master --tags
-```
-
-> `v1.2.3` 形式 → 出**单包**（`_base`）；客户名 tag → 只打该客户（历史兼容）；其他 tag 报错退出。
-
-**打哪些包：** 不指定客户时只出**单包**（`_base`）；指定客户时才扫 `branding/customers/<customer>.properties` + `branding/icon/<customer>.png`（`_` 开头的除外）。**客户列表就是这两个目录里的文件名**。
-
-本地可以预览本次会打哪些目标：
-
-```bash
-bash branding/ci-targets.sh
-# 构建目标: ["_base"]
-```
+原理就是推 tag：本地只需要 git，不需要 JDK/Android SDK。GitHub 收到 tag 事件后编译、签名、发 Release。
+也可以在 Actions 页手动 Run workflow（没有客户参数）。
 
 ### 4. 产物去哪找
 
-**单包**（默认）：Release tag = `agent`，产物 `agent.apk`：
+Release tag = 版本号（如 `v2.2.4`），产物 `agent.apk`：
 
 ```
-https://github.com/<owner>/<repo>/releases/tag/agent
-https://github.com/<owner>/<repo>/releases/download/agent/agent.apk
+https://github.com/<owner>/<repo>/releases/tag/v2.2.4
+https://github.com/<owner>/<repo>/releases/download/v2.2.4/agent.apk
 ```
 
-**按客户换皮**（历史用法）：一个客户一个 Release（tag = 客户代号），产物 `agent-<customer>.apk`。
-
-> ⚠️ 仓库是私有的，所以这个下载链接**需要登录 GitHub** 才能用。要给别人直接点链接下载，得把仓库改成公开（那就建议把真实 IP/域名改从 Secrets 注入，别写在仓库里）。
+配了 `DEPLOY_HOST` / `DEPLOY_SSH_KEY` 两个 Secret 时，CI 还会直接 scp 到自己的服务器。
 
 ### 5. 优先级
 
 ```
-workflow 手动输入(-P)  >  GitHub Variables(BRAND_*)  >  branding/customers/<customer>.properties  >  branding.properties  >  代码默认值
+workflow 手动输入(-P)  >  GitHub Variables(BRAND_*)  >  branding.properties  >  代码默认值
 ```
 
 本地同理，`build.sh` 支持透传 `-P`：
 
 ```bash
-./branding/build.sh release -Pcustomer=customerA -Pversion_code=100
-```
-
-想本地看「会打哪些客户」：
-
-```bash
-bash branding/ci-targets.sh
+./branding/build.sh release -Pversion_code=225
 ```
 
 > 为兼容 CI，图标生成已从 macOS 的 `sips` 换成纯 Java（ImageIO），默认图标从 `.webp` 换成 `.png`（Java 读不了 WebP）；`gradle.properties` 加了 `-Djava.awt.headless=true`。

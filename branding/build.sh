@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 一键换皮打包
 #
-# 【日常】只出一个客户 -> 推代码 + 触发 CI + 打印下载地址（本地不需要 JDK/Android SDK）：
-#   ./branding/build.sh customerA
+# 【日常】发版 -> 推代码 + 打版本 tag 触发 CI + 打印下载地址（本地不需要 JDK/Android SDK）：
+#   ./branding/build.sh v2.2.0
 #
 # 【本地调试】本机编译：
 #   ./branding/build.sh            # 只打 debug 包
@@ -17,16 +17,15 @@ cd "$(dirname "$0")/.."
 UPLOAD_TARGET="${UPLOAD_TARGET:-root@foresh}"
 UPLOAD_DIR="${UPLOAD_DIR:-/root/workspace/webserver/website/www/html/apk}"
 # 上传成功后打印的下载地址前缀（不带结尾斜杠）
-UPLOAD_URL_BASE="${UPLOAD_URL_BASE:-https://file.foresh.com/apk}"
+UPLOAD_URL_BASE="${UPLOAD_URL_BASE:-https://files.foresh.com/apk}"
 
 usage() {
   echo "用法:" >&2
-  echo "  $0 <客户代号>                    # 推代码 + 推同名 tag 触发 CI，只打这个客户，打印下载地址" >&2
   echo "  $0 v2.2.0                        # 推代码 + 推版本 tag，CI 打单包（com.foresh.agent → agent.apk）" >&2
   echo "  $0 [debug|release|all] [--clean] [--upload] [-Pkey=value ...]   # 本机编译" >&2
   echo "  --clean   打包前先 clean" >&2
-  echo "  --upload  打包后上传到 ${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-<customer>.apk" >&2
-  echo "  -Pkey=value  透传给 Gradle，覆盖 branding.properties（例：-Pcustomer=customerA）" >&2
+  echo "  --upload  打包后上传到 ${UPLOAD_TARGET}:${UPLOAD_DIR}/agent.apk" >&2
+  echo "  -Pkey=value  透传给 Gradle，覆盖 branding.properties（例：-Pversion_code=225）" >&2
 }
 
 # 从 origin 推导 owner/repo，不依赖 gh
@@ -38,51 +37,38 @@ repo_slug() {
 
 # ===== 日常模式：./branding/build.sh <客户代号> =====
 publish_to_ci() {
-  local customer="$1"
+  local tag="$1"
   local repo download_url asset
-  local is_version=0
-  if printf '%s' "$customer" | grep -qE '^v[0-9]'; then
-    is_version=1
-  fi
-
-  # 用 ci-targets.sh 的同一套规则校验 tag 是否可用
-  if ! TAG="$customer" bash branding/ci-targets.sh >/dev/null 2>&1; then
-    echo "❌ 无效的目标 ${customer}" >&2
-    echo "   客户包：需要 branding/customers/${customer}.properties 或 branding/icon/${customer}.png" >&2
-    echo "   单  包：用版本号形式，例：v2.2.0" >&2
+  if ! printf '%s' "$tag" | grep -qE '^v[0-9]'; then
+    echo "❌ 无效的 tag：${tag}" >&2
+    echo "   用版本号形式，例：v2.2.0" >&2
     exit 1
   fi
 
   repo="$(repo_slug)"
-  if [ "$is_version" -eq 1 ]; then
-    # 单包：workflow 里 _base 固定发布到 tag=agent / agent.apk
-    asset="agent.apk"
-    download_url="https://github.com/${repo}/releases/download/agent/agent.apk"
-  else
-    asset="agent-${customer}.apk"
-    download_url="https://github.com/${repo}/releases/download/${customer}/${asset}"
-  fi
+  asset="agent.apk"
+  download_url="https://github.com/${repo}/releases/download/${tag}/${asset}"
 
   # 有改动就提交推送（CI 从仓库拉代码）
   if [ -n "$(git status --porcelain)" ]; then
     echo "📦 提交并推送改动..."
     git add -A
-    git commit -m "release ${customer}" >/dev/null
+    git commit -m "release ${tag}" >/dev/null
     git push origin HEAD
   else
     echo "ℹ️ 没有未提交的改动，直接用当前代码"
   fi
 
   # 已存在且已指向当前提交的 tag，推送不会产生新事件 -> 提前告知
-  if git rev-parse -q --verify "refs/tags/${customer}" >/dev/null 2>&1 &&
-    [ "$(git rev-parse "refs/tags/${customer}")" = "$(git rev-parse HEAD)" ]; then
-    echo "⚠️ tag ${customer} 已经指向当前提交，本次推送不会触发构建" >&2
+  if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1 &&
+    [ "$(git rev-parse "refs/tags/${tag}")" = "$(git rev-parse HEAD)" ]; then
+    echo "⚠️ tag ${tag} 已经指向当前提交，本次推送不会触发构建" >&2
     echo "   想强制重跑：到 Actions 页点 Re-run，或先改点东西再执行本命令" >&2
   fi
 
-  echo "🚀 触发 CI 构建：${customer}"$([ "$is_version" -eq 1 ] && echo "（单包）")
-  git tag -f "${customer}" >/dev/null
-  git push -f origin "refs/tags/${customer}"
+  echo "🚀 触发 CI 构建：${tag}"
+  git tag -f "${tag}" >/dev/null
+  git push -f origin "refs/tags/${tag}"
 
   echo ""
   echo "🔗 下载地址（编译完成后可用）:"
@@ -204,30 +190,18 @@ if [ "$UPLOAD" -eq 1 ]; then
     echo "❌ release 包未签名，取消上传" >&2
     exit 1
   fi
-  if [ ! -f "$CONFIG" ]; then
-    echo "❌ 上传需要 ${CONFIG} 提供 customer" >&2
-    exit 1
-  fi
-
-  # $zcwx：远程文件名用的客户代号，取自 branding.properties 的 customer
-  CUSTOMER="$(sed -nE 's/^[[:space:]]*customer[[:space:]]*=[[:space:]]*//p' "$CONFIG" | tail -n 1)"
-  if [ -z "$CUSTOMER" ]; then
-    echo "❌ 上传需要配置 customer（远程文件名依赖它，形如 agent-<customer>.apk）" >&2
-    exit 1
-  fi
-
   APK="app/build/outputs/apk/release/app-release.apk"
   if [ ! -f "$APK" ]; then
     echo "❌ 找不到 release APK: $APK" >&2
     exit 1
   fi
 
-  REMOTE="${UPLOAD_TARGET}:${UPLOAD_DIR}/agent-${CUSTOMER}.apk"
+  REMOTE="${UPLOAD_TARGET}:${UPLOAD_DIR}/agent.apk"
   echo ""
   echo "⬆️  上传: ${APK} -> ${REMOTE}"
   scp "$APK" "$REMOTE"
-  echo "✅ 上传完成: agent-${CUSTOMER}.apk"
-  echo "🔗 下载地址: ${UPLOAD_URL_BASE%/}/agent-${CUSTOMER}.apk"
+  echo "✅ 上传完成: agent.apk"
+  echo "🔗 下载地址: ${UPLOAD_URL_BASE%/}/agent.apk"
 fi
 
 echo ""

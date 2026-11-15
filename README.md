@@ -13,17 +13,12 @@
 ```
 app/                      Android 工程（只有一个 MainActivity + WebView 壳）
 branding/
-  branding.properties     所有客户的公共默认配置 ★经常改
-  customers/              每个客户一个配置文件 ★新增客户来这里
-    _template.properties  模板（_ 开头，不会被打包）
-    zcwx.properties       客户 zcwx
+  branding.properties     默认配置 ★经常改
   icon/
-    <客户>.png            某客户的图标（可选，文件名 = 客户代号）
-    ic_launcher.png       通用图标（没配客户图标时用它）
+    ic_launcher.png       应用图标
     default/ic_launcher.png  兜底图标
   res/                    构建时自动生成（图标 + network_security_config），别手改
   build.sh                ★一条命令出包
-  ci-targets.sh           计算本次要打哪些客户（build.sh 与 CI 都用它）
   README.md               配置项与安全设计的详细说明
 .github/workflows/
   android-release.yml     GitHub Actions：编译 + 签名 + 发 Release
@@ -72,18 +67,11 @@ cp ~/a.png branding/icon/customerA.png
 - 客户列表**就是** `branding/customers/` 和 `branding/icon/` 里的文件名，没有别的来源。
 - 配置文件只写「和 `branding.properties` 不同的值」，其余全部继承。空文件也可以（表示全继承）。
 - 图标查找顺序：`branding/icon/<客户>.png` → `branding/icon/ic_launcher.png` → `branding/icon/default/ic_launcher.png`
-- 包名 = `application_id + "." + 客户代号`，例：`com.foresh.agent.customerA`
-
-查看当前会被打包的客户：
-
-```bash
-bash branding/ci-targets.sh
-# 构建目标: ["zcwx"]
-```
+- 包名 = `application_id`（单包，不追加客户后缀）
 
 ### 配置项
 
-所有键都可以写在 `branding.properties`（公共默认）或 `branding/customers/<客户>.properties`（该客户覆盖）：
+所有键都写在 `branding.properties`：
 
 | 键 | 说明 |
 |---|---|
