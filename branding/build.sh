@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 UPLOAD_TARGET="${UPLOAD_TARGET:-root@foresh}"
 UPLOAD_DIR="${UPLOAD_DIR:-/root/workspace/webserver/website/www/html/apk}"
 # 上传成功后打印的下载地址前缀（不带结尾斜杠）
-UPLOAD_URL_BASE="${UPLOAD_URL_BASE:-https://files.foresh.com/apk}"
+UPLOAD_URL_BASE="${UPLOAD_URL_BASE:-https://foresh.com/apk}"
 
 usage() {
   echo "用法:" >&2

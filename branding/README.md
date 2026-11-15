@@ -103,7 +103,7 @@ fallback_url=http://192.168.1.100:8080   # 域名连不上时自动走 IP:8080
 
 - 远程文件名固定为 `agent.apk`。
 - 默认目标：`root@foresh:/root/workspace/webserver/website/www/html/apk/`。
-- 上传成功后会打印下载地址：`https://files.foresh.com/apk/agent.apk`。
+- 上传成功后会打印下载地址：`https://foresh.com/apk/agent.apk`。
 - 可用环境变量覆盖，不需要改脚本：
 
 ```bash
