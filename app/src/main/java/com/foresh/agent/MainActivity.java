@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.os.CountDownTimer;
 import android.os.Environment;
 import android.os.Handler;
+import android.provider.MediaStore;
 import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.URLUtil;
@@ -29,6 +30,7 @@ import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -36,6 +38,7 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.net.URI;
 import java.util.HashMap;
 
@@ -68,6 +71,9 @@ public class MainActivity extends AppCompatActivity {
 
     // ===== 文件上传相关 =====
     private ValueCallback<Uri[]> filePathCallback;
+    // 拍照输出目标（FileProvider URI）。拍照回来时 Intent 的 data 是 null，
+    // 图片写在 EXTRA_OUTPUT 指向的这个文件里，onActivityResult 靠它把结果交回 WebView。
+    private Uri pendingPhotoUri;
     private static final int FILE_CHOOSER_RESULT_CODE = 100;
 
     // ===== 服务器地址设置 =====
@@ -193,7 +199,7 @@ public class MainActivity extends AppCompatActivity {
 
         webView.setWebViewClient(new CustomWebViewClient());
 
-        // 文件上传：只有白名单页面才允许唤起系统选择器
+        // 文件上传：只有白名单页面才允许唤起系统选择器；额外提供「拍照」入口
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
@@ -206,15 +212,43 @@ public class MainActivity extends AppCompatActivity {
                 }
                 MainActivity.this.filePathCallback = callback;
 
-                Intent intent = fileChooserParams.createIntent();
+                // 文件选择器：正常由 WebView 按 <input> 的 accept/multiple 构造
+                Intent contentIntent;
                 try {
-                    startActivityForResult(intent, FILE_CHOOSER_RESULT_CODE);
+                    contentIntent = fileChooserParams.createIntent();
                 } catch (Exception e) {
-                    Intent picIntent = new Intent(Intent.ACTION_GET_CONTENT);
-                    picIntent.addCategory(Intent.CATEGORY_OPENABLE);
-                    picIntent.setType("image/*");
-                    startActivityForResult(
-                            Intent.createChooser(picIntent, "选择图片"), FILE_CHOOSER_RESULT_CODE);
+                    contentIntent = new Intent(Intent.ACTION_GET_CONTENT);
+                    contentIntent.addCategory(Intent.CATEGORY_OPENABLE);
+                    contentIntent.setType("*/*");
+                }
+
+                // 相机：ACTION_IMAGE_CAPTURE 拍一张，输出到 FileProvider 提供的 cache 文件。
+                // 调系统相机 App 不需要 CAMERA 权限（Manifest 里声明了反而必须运行时申请，否则直接抛异常）。
+                Intent cameraIntent = null;
+                try {
+                    File dir = new File(getCacheDir(), "camera");
+                    if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("mkdirs failed");
+                    File photo = new File(dir, "pick-" + System.currentTimeMillis() + ".jpg");
+                    pendingPhotoUri = FileProvider.getUriForFile(MainActivity.this,
+                            getPackageName() + ".fileprovider", photo);
+                    cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                    cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, pendingPhotoUri);
+                    cameraIntent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                } catch (Exception e) {
+                    pendingPhotoUri = null; // 相机不可用就只给文件选择器，不影响上传
+                }
+
+                Intent chooser = Intent.createChooser(contentIntent, "上传附件");
+                if (cameraIntent != null) {
+                    chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{ cameraIntent });
+                }
+                try {
+                    startActivityForResult(chooser, FILE_CHOOSER_RESULT_CODE);
+                } catch (Exception e) {
+                    MainActivity.this.filePathCallback.onReceiveValue(null);
+                    MainActivity.this.filePathCallback = null;
+                    pendingPhotoUri = null;
+                    return false;
                 }
                 return true;
             }
@@ -339,23 +373,33 @@ public class MainActivity extends AppCompatActivity {
         }
         if (requestCode == FILE_CHOOSER_RESULT_CODE) {
             if (filePathCallback == null) {
+                pendingPhotoUri = null;
                 return;
             }
             Uri[] results = null;
-            if (resultCode == RESULT_OK && data != null) {
-                Uri uri = data.getData();
-                if (uri != null) {
-                    results = new Uri[]{uri};
-                } else if (data.getClipData() != null) {
-                    int count = data.getClipData().getItemCount();
-                    results = new Uri[count];
-                    for (int i = 0; i < count; i++) {
-                        results[i] = data.getClipData().getItemAt(i).getUri();
+            if (resultCode == RESULT_OK) {
+                // 拍照回来时 data 是 null（图片写在 EXTRA_OUTPUT 指向的文件里），
+                // 不能只看 data.getData()，否则拍完照会当成「没选东西」丢掉。
+                boolean fromCamera = (data == null
+                        || (data.getData() == null && data.getClipData() == null));
+                if (fromCamera) {
+                    if (pendingPhotoUri != null) results = new Uri[]{ pendingPhotoUri };
+                } else {
+                    Uri uri = data.getData();
+                    if (uri != null) {
+                        results = new Uri[]{uri};
+                    } else if (data.getClipData() != null) {
+                        int count = data.getClipData().getItemCount();
+                        results = new Uri[count];
+                        for (int i = 0; i < count; i++) {
+                            results[i] = data.getClipData().getItemAt(i).getUri();
+                        }
                     }
                 }
             }
             filePathCallback.onReceiveValue(results);
             filePathCallback = null;
+            pendingPhotoUri = null;
         }
     }
 

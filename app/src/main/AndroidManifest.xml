@@ -6,6 +6,13 @@
     <!-- 语音输入（window.AgentNative 录音桥）；仅本 App 前台、白名单页面可开录 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Android 11+ 包可见性：不声明就查不到系统相机 App，ACTION_IMAGE_CAPTURE 会失败 -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -47,5 +54,16 @@
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
+
+        <!-- 拍照输出走 FileProvider（targetSdk 35 不允许直接用 file:// URI 分享） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>
