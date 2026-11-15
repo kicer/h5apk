@@ -4,22 +4,18 @@ on:
   # 手动触发（Actions 页面点 Run workflow）
   workflow_dispatch:
     inputs:
-      customer:
-        description: '只打这一个客户（留空 = 打 branding/icon/ 下所有客户图标）'
-        required: false
-        default: ''
       version_code:
-        description: 'version_code（留空 = 用 Variables / branding.properties 的值）'
+        description: 'version_code（留空 = 用 branding.properties 的值）'
         required: false
         default: ''
       version_name:
-        description: 'version_name（留空 = 用 Variables / branding.properties 的值）'
+        description: 'version_name（留空 = 用 branding.properties 的值）'
         required: false
         default: ''
-  # 推 tag 触发：tag 名 = 客户代号 -> 只打该客户；v1.2.3 形式 -> 打全部客户
+  # 推 tag 触发（v1.2.3 形式）
   push:
     tags:
-      - '*'
+      - 'v*'
 
 permissions:
   contents: read
@@ -29,36 +25,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 决定本次构建哪些客户包
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      targets: ${{ steps.scan.outputs.targets }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Scan build targets
-        id: scan
-        env:
-          INPUT_CUSTOMER: ${{ github.event.inputs.customer }}
-          TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-        run: bash branding/ci-targets.sh >> "$GITHUB_OUTPUT"
-
   build:
-    needs: prepare
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        customer: ${{ fromJSON(needs.prepare.outputs.targets) }}
-    # ===== 全部换皮配置项都可以在 GitHub 上配 =====
+    # ===== 换皮配置项都可以在 GitHub 上配 =====
     # Settings → Secrets and variables → Actions → Variables 里新建同名 Variable 即可覆盖；
     # 未配置的项自动回退到 branding.properties（空串会被当作「未设置」）
     env:
       BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
       BRAND_STATUS_BAR_COLOR: ${{ vars.BRAND_STATUS_BAR_COLOR }}
-      BRAND_CUSTOMER: ${{ vars.BRAND_CUSTOMER }}
       BRAND_APPLICATION_ID: ${{ vars.BRAND_APPLICATION_ID }}
       BRAND_VERSION_CODE: ${{ vars.BRAND_VERSION_CODE }}
       BRAND_VERSION_NAME: ${{ vars.BRAND_VERSION_NAME }}
@@ -127,51 +101,30 @@ jobs:
 
       - name: Build release APK
         env:
-          TARGET: ${{ matrix.customer }}
           INPUT_VERSION_CODE: ${{ github.event.inputs.version_code }}
           INPUT_VERSION_NAME: ${{ github.event.inputs.version_name }}
         run: |
           set -euo pipefail
-          ARGS=""
-          if [ "$TARGET" = "_base" ]; then
-            # 显式清空 customer，强制使用基础包名
-            ARGS="-Pcustomer="
-          else
-            ARGS="-Pcustomer=$TARGET"
-          fi
-          if [ -n "$INPUT_VERSION_CODE" ]; then
-            ARGS="$ARGS -Pversion_code=$INPUT_VERSION_CODE"
-          fi
-          if [ -n "$INPUT_VERSION_NAME" ]; then
-            ARGS="$ARGS -Pversion_name=$INPUT_VERSION_NAME"
-          fi
-
+          ARGS="-Pcustomer="   # 单包：强制基础包名，不再按客户换皮
+          if [ -n "$INPUT_VERSION_CODE" ]; then ARGS="$ARGS -Pversion_code=$INPUT_VERSION_CODE"; fi
+          if [ -n "$INPUT_VERSION_NAME" ]; then ARGS="$ARGS -Pversion_name=$INPUT_VERSION_NAME"; fi
           # shellcheck disable=SC2086
           ./branding/build.sh release $ARGS
-
           mkdir -p dist
-          if [ "$TARGET" = "_base" ]; then
-            OUT="agent.apk"
-          else
-            OUT="agent-$TARGET.apk"
-          fi
-          cp app/build/outputs/apk/release/app-release.apk "dist/$OUT"
-          echo "产物: dist/$OUT"
+          cp app/build/outputs/apk/release/app-release.apk dist/agent.apk
+          echo "产物: dist/agent.apk"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v5
         with:
-          name: apk-${{ matrix.customer }}
-          path: dist/*.apk
+          name: apk
+          path: dist/agent.apk
           if-no-files-found: error
           retention-days: 30
 
-  # 产物按客户发布到各自的 Release（tag = 客户代号），便于「按客户找包」
-  # 只有该客户构建成功才会更新它的 Release；单个客户失败不影响其他客户
-  # 另：若配了 DEPLOY_HOST + DEPLOY_SSH_KEY，还会把 APK 直接 scp 到自己的服务器
   release:
-    needs: [prepare, build]
-    if: ${{ always() && needs.prepare.result == 'success' }}
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -186,41 +139,29 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Download all APKs
+      - name: Download APK
         uses: actions/download-artifact@v5
         with:
+          name: apk
           path: dist
-          merge-multiple: true
 
-      - name: Publish per-customer releases
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGETS: ${{ needs.prepare.outputs.targets }}
         run: |
           set -euo pipefail
           ls -la dist
-          echo "客户列表: $TARGETS"
-          for c in $(printf '%s' "$TARGETS" | jq -r '.[]'); do
-            if [ "$c" = "_base" ]; then
-              tag="agent"; asset="agent.apk"
-            else
-              tag="$c"; asset="agent-$c.apk"
-            fi
-            if [ ! -f "dist/$asset" ]; then
-              echo "⚠️ 跳过 $c：找不到 dist/$asset"
-              continue
-            fi
-            ( cd dist && sha256sum "$asset" > SHA256SUMS.txt )
-            if gh release view "$tag" >/dev/null 2>&1; then
-              echo "更新 Release: $tag"
-              gh release upload "$tag" "dist/$asset" dist/SHA256SUMS.txt --clobber
-            else
-              echo "创建 Release: $tag"
-              gh release create "$tag" "dist/$asset" dist/SHA256SUMS.txt \
-                --title "$tag" \
-                --notes "自动构建产物。SHA-256 见 SHA256SUMS.txt。"
-            fi
-          done
+          ( cd dist && sha256sum agent.apk > SHA256SUMS.txt )
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "更新 Release: $tag"
+            gh release upload "$tag" dist/agent.apk dist/SHA256SUMS.txt --clobber
+          else
+            echo "创建 Release: $tag"
+            gh release create "$tag" dist/agent.apk dist/SHA256SUMS.txt \
+              --title "$tag" \
+              --notes "自动构建产物。SHA-256 见 SHA256SUMS.txt。"
+          fi
 
       # ===== 以下两步：把 APK 直接传到你自己的服务器（没配 Secret 自动跳过）=====
       - name: Setup SSH
@@ -238,30 +179,16 @@ jobs:
             ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
           fi
 
-      - name: Deploy APKs to server
+      - name: Deploy APK to server
         if: ${{ env.DEPLOY_HOST != '' && env.DEPLOY_SSH_KEY != '' }}
         env:
-          TARGETS: ${{ needs.prepare.outputs.targets }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
           DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
-          DEPLOY_URL_BASE: ${{ vars.DEPLOY_URL_BASE }}
         run: |
           set -euo pipefail
           DEPLOY_USER="${DEPLOY_USER:-root}"
           DEPLOY_DIR="${DEPLOY_DIR:-/root/workspace/webserver/website/www/html/apk}"
-          DEPLOY_URL_BASE="${DEPLOY_URL_BASE:-https://file.foresh.com/apk}"
           remote="${DEPLOY_USER}@${DEPLOY_HOST}"
           ssh -o BatchMode=yes "$remote" "mkdir -p '${DEPLOY_DIR}'"
-          for c in $(printf '%s' "$TARGETS" | jq -r '.[]'); do
-            if [ "$c" = "_base" ]; then
-              asset="agent.apk"
-            else
-              asset="agent-$c.apk"
-            fi
-            if [ ! -f "dist/$asset" ]; then
-              echo "⚠️ 跳过 $c：找不到 dist/$asset"
-              continue
-            fi
-            scp -o BatchMode=yes "dist/$asset" "${remote}:${DEPLOY_DIR}/${asset}"
-            echo "✅ 已上传 ${asset} -> ${DEPLOY_URL_BASE%/}/${asset}"
-          done
+          scp -o BatchMode=yes dist/agent.apk "${remote}:${DEPLOY_DIR}/agent.apk"
+          echo "✅ 已上传 agent.apk -> ${DEPLOY_DIR}/agent.apk"
